@@ -1,0 +1,38 @@
+{
+  "name": "playwright-contact-form-poc",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/contact_outreach_workflow/contact_outreach_orchestrator.ts",
+    "production": "tsx src/contact_outreach_workflow/contact_outreach_orchestrator.ts production",
+    "deep-debug": "tsx src/contact_outreach_workflow/contact_outreach_orchestrator.ts deep-debug",
+    "outreach:local": "tsx src/contact_outreach_workflow/contact_outreach_orchestrator.ts",
+    "outreach:database": "tsx src/contact_outreach_workflow/database_outreach_runner.ts",
+    "analyze": "tsx src/contact_form_analytics/contact_form_run_analyzer.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test tests/**/*.test.ts",
+    "test:deep-debug": "tsx --test tests/deep-debug-observability.test.ts",
+    "test:stagehand": "tsx --test tests/stagehand-smoke.ts",
+    "db:migrate": "tsx src/database/run_database_migrations.ts",
+    "db:verify": "tsx src/database/verify_outreach_schema.ts",
+    "db:setup": "tsx src/database/setup_initial_outreach_campaign.ts",
+    "db:sync-campaign": "tsx src/database/synchronize_campaign_websites.ts"
+  },
+  "dependencies": {
+    "@ai-sdk/openai": "2.0.110",
+    "@browserbasehq/stagehand": "3.6.0",
+    "@openrouter/ai-sdk-provider": "1.5.4",
+    "ai": "5.0.133",
+    "mysql2": "^3.23.2",
+    "playwright": "^1.61.0",
+    "tldts": "^7.4.10",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@mermaid-js/mermaid-cli": "^11.16.0",
+    "@types/node": "^24.0.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.8.0"
+  }
+}

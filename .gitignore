@@ -1,0 +1,27 @@
+# Dependencies and build output
+node_modules/
+dist/
+
+# Playwright and test output
+playwright-report/
+blob-report/
+test-results/
+coverage/
+*.log
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+
+# Python caches and local environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Workflow runtime artifacts
+output/
+**/deep-debug/
+contact-form-runs/testing-process/
+run_results/
