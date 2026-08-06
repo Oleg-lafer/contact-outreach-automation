@@ -8,8 +8,6 @@ Give it a website and your contact details. The workflow opens a single browser 
 - **Emails:** finds published business email addresses. It does not send email.
 - **Meetings:** finds genuine scheduling links or embedded booking widgets. It does not book meetings.
 
-> [!WARNING]
-> Normal runs can submit contact forms on live websites. Only use this project with sites where you have permission to make test or outreach submissions. It does not solve CAPTCHAs or attempt to bypass anti-bot protections.
 
 ## What a run reports
 
