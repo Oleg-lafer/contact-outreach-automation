@@ -1,0 +1,296 @@
+{
+  "schemaVersion": 1,
+  "rulebookVersion": "1.0.0",
+  "status": "draft",
+  "scope": "One attempted form submission. Scores describe evidence of submission acceptance or rejection, not earlier workflow stages.",
+  "sourceContract": {
+    "inputType": "AuthoritativeSubmissionEvidenceInput",
+    "typeFile": "shared_files_forms/forms_types_(Support).ts",
+    "assessmentFile": "pipeline/C_submission/C10_submission_evidence_assessment_(Deterministic).ts",
+    "messageClassificationOwner": "pipeline/C_submission/C6_submission_confirmation_(Deterministic).ts",
+    "networkClassificationOwner": "pipeline/C_submission/C7_network_submission_evidence_(Deterministic).ts",
+    "principle": "The scoring rulebook consumes already-classified deterministic evidence. It does not repeat message regexes or network-correlation logic."
+  },
+  "scoreScale": {
+    "minimumAtomicScore": -3,
+    "maximumAtomicScore": 3,
+    "neutralScore": 0,
+    "levels": {
+      "1": "Weak or supporting evidence",
+      "2": "Strong technical evidence",
+      "3": "Direct or nearly decisive evidence"
+    }
+  },
+  "classification": {
+    "positive": {
+      "condition": "totalScore > 0",
+      "classification": "success",
+      "displayTemplate": "Success {totalScore}"
+    },
+    "negative": {
+      "condition": "totalScore < 0",
+      "classification": "failure",
+      "displayTemplate": "Failure {totalScore}"
+    },
+    "zero": {
+      "condition": "totalScore === 0",
+      "classification": "inconclusive",
+      "displayTemplate": "Inconclusive"
+    },
+    "preservePolarityFlags": true
+  },
+  "signals": [
+    {
+      "id": "visible_success_text",
+      "polarity": "positive",
+      "family": "visible_confirmation",
+      "scoring": "fixed",
+      "score": 3,
+      "evidence": {
+        "kind": "confirmation",
+        "source": "visibleEvidence.confirmationEvidence",
+        "equals": "successText"
+      },
+      "dedupeGroup": "visible_confirmation",
+      "description": "A newly visible deterministic message explicitly confirms that the form was submitted, sent, received, or recorded."
+    },
+    {
+      "id": "success_url",
+      "polarity": "positive",
+      "family": "success_url",
+      "scoring": "fixed",
+      "score": 2,
+      "evidence": {
+        "kind": "confirmation",
+        "source": "visibleEvidence.confirmationEvidence",
+        "equals": "successUrl"
+      },
+      "dedupeGroup": "success_url",
+      "description": "The browser navigated to a deterministic success URL after submission."
+    },
+    {
+      "id": "ai_verified_visible_success",
+      "polarity": "positive",
+      "family": "visible_confirmation",
+      "scoring": "fixed",
+      "score": 2,
+      "evidence": {
+        "kind": "confirmation",
+        "source": "stagehandEvidence",
+        "equals": "aiVisibleText"
+      },
+      "dedupeGroup": "visible_confirmation",
+      "description": "The bounded AI fallback verified a newly visible explicit success message."
+    },
+    {
+      "id": "network_confirmation",
+      "polarity": "positive",
+      "family": "network",
+      "scoring": "variants",
+      "evidence": {
+        "kind": "network",
+        "source": "networkEvidence",
+        "outcomeField": "confirmsSubmission",
+        "requestSelection": "bestRequest"
+      },
+      "dedupeGroup": "network_positive",
+      "variants": [
+        {
+          "id": "provider_correlated_2xx",
+          "priority": 300,
+          "score": 2,
+          "statusMinimum": 200,
+          "statusMaximum": 299,
+          "providerRule": "present"
+        },
+        {
+          "id": "generic_correlated_2xx",
+          "priority": 200,
+          "score": 1,
+          "statusMinimum": 200,
+          "statusMaximum": 299,
+          "providerRule": "any"
+        },
+        {
+          "id": "correlated_3xx_redirect",
+          "priority": 100,
+          "score": 1,
+          "statusMinimum": 300,
+          "statusMaximum": 399,
+          "providerRule": "any"
+        }
+      ],
+      "description": "A correlated, form-like state-changing request returned a successful or redirect HTTP status."
+    },
+    {
+      "id": "validation_rejection",
+      "polarity": "negative",
+      "family": "validation",
+      "scoring": "fixed",
+      "score": -3,
+      "evidence": {
+        "kind": "rejectionCategory",
+        "source": "visibleEvidence.rejectionEvidence",
+        "category": "validation",
+        "allowedEvidenceSources": [
+          "visibleMessage"
+        ]
+      },
+      "dedupeGroup": "validation_rejection",
+      "description": "New visible validation evidence explicitly rejected the attempted submission."
+    },
+    {
+      "id": "captcha_rejection",
+      "polarity": "negative",
+      "family": "captcha",
+      "scoring": "fixed",
+      "score": -3,
+      "evidence": {
+        "kind": "rejectionCategory",
+        "source": "visibleEvidence.rejectionEvidence",
+        "category": "captcha",
+        "allowedEvidenceSources": [
+          "visibleMessage"
+        ]
+      },
+      "dedupeGroup": "captcha",
+      "description": "New visible evidence explicitly stated that CAPTCHA or robot verification rejected submission."
+    },
+    {
+      "id": "captcha_blocked",
+      "polarity": "negative",
+      "family": "captcha",
+      "scoring": "fixed",
+      "score": -2,
+      "evidence": {
+        "kind": "boolean",
+        "source": "captchaBlocked",
+        "equals": true
+      },
+      "dedupeGroup": "captcha",
+      "description": "CAPTCHA physically blocked permitted completion of the submission."
+    },
+    {
+      "id": "server_rejection",
+      "polarity": "negative",
+      "family": "visible_rejection",
+      "scoring": "fixed",
+      "score": -3,
+      "evidence": {
+        "kind": "rejectionCategory",
+        "source": "visibleEvidence.rejectionEvidence",
+        "category": "server",
+        "allowedEvidenceSources": [
+          "visibleMessage"
+        ]
+      },
+      "dedupeGroup": "server_rejection",
+      "description": "A newly visible message explicitly stated that the server or form service rejected submission."
+    },
+    {
+      "id": "generic_rejection",
+      "polarity": "negative",
+      "family": "visible_rejection",
+      "scoring": "fixed",
+      "score": -2,
+      "evidence": {
+        "kind": "rejectionCategory",
+        "source": "visibleEvidence.rejectionEvidence",
+        "category": "generic",
+        "allowedEvidenceSources": [
+          "visibleMessage"
+        ]
+      },
+      "dedupeGroup": "generic_rejection",
+      "description": "A newly visible generic error explicitly rejected submission without a more specific supported category."
+    },
+    {
+      "id": "network_rejection",
+      "polarity": "negative",
+      "family": "network",
+      "scoring": "variants",
+      "evidence": {
+        "kind": "network",
+        "source": "networkEvidence",
+        "outcomeField": "rejectsSubmission",
+        "requestSelection": "bestRejectionRequestThenBestRequest"
+      },
+      "dedupeGroup": "network_negative",
+      "variants": [
+        {
+          "id": "provider_correlated_http_rejection",
+          "priority": 300,
+          "score": -3,
+          "statusMinimum": 400,
+          "statusMaximum": 599,
+          "providerRule": "present"
+        },
+        {
+          "id": "correlated_http_rejection",
+          "priority": 200,
+          "score": -2,
+          "statusMinimum": 400,
+          "statusMaximum": 599,
+          "providerRule": "any"
+        },
+        {
+          "id": "transport_failure_without_http_response",
+          "priority": 100,
+          "score": -1,
+          "status": "missing",
+          "providerRule": "any"
+        }
+      ],
+      "description": "A correlated form-like request was explicitly rejected by HTTP response or failed at the transport layer."
+    }
+  ],
+  "deduplication": {
+    "oneScorePerSignalPerAttempt": true,
+    "groupResolution": [
+      {
+        "group": "visible_confirmation",
+        "strategy": "highest_positive_score"
+      },
+      {
+        "group": "captcha",
+        "strategy": "lowest_negative_score"
+      },
+      {
+        "group": "network_positive",
+        "strategy": "highest_priority_variant"
+      },
+      {
+        "group": "network_negative",
+        "strategy": "highest_priority_variant"
+      }
+    ],
+    "metadataNotScoredSeparately": [
+      "exact message text",
+      "normalized message text",
+      "HTTP response class",
+      "HTTP status outside the selected network variant",
+      "correlation basis",
+      "provider rule ID",
+      "post-click disposition",
+      "contradiction marker"
+    ]
+  },
+  "neutralEvidence": [
+    "no form-like post-click request",
+    "tracking-only traffic",
+    "submit click timestamp unavailable or invalid",
+    "ambiguous medium-confidence network activity",
+    "unconfirmed post-click disposition",
+    "missing, malformed, or unsafe evidence"
+  ],
+  "aggregation": {
+    "operation": "sum",
+    "input": "retained atomic signal scores after deduplication",
+    "output": "totalScore",
+    "derive": {
+      "hasPositiveSignals": "at least one retained score > 0",
+      "hasNegativeSignals": "at least one retained score < 0",
+      "hasBothPolarities": "hasPositiveSignals && hasNegativeSignals"
+    }
+  }
+}
