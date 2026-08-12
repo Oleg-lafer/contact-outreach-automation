@@ -31,9 +31,10 @@ launch, the TypeScript build, and database connectivity/schema.
 .\operations\run-campaign.ps1
 ```
 
-The launcher asks for the campaign ID and whether previously unsuccessful sites
-should be retried. It always performs a read-only preview first. The database
-runner then asks you to type `RUN` before live submissions begin.
+The launcher asks for the campaign ID, run mode, and whether previously
+unsuccessful sites should be retried. Press Enter at the run-mode question to
+use the normal `production` mode. It always performs a read-only preview first.
+The database runner then asks you to type `RUN` before live submissions begin.
 
 Parameters can also be supplied directly:
 
