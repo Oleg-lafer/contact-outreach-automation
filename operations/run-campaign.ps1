@@ -6,7 +6,7 @@ param(
     [switch]$RetryUnsuccessful,
 
     [ValidateSet("production", "deep-debug")]
-    [string]$Mode = "production"
+    [string]$Mode
 )
 
 $ErrorActionPreference = "Stop"
@@ -19,6 +19,17 @@ if (-not $CampaignId) {
         throw "Campaign ID must be a positive integer."
     }
     $CampaignId = [int]$campaignIdText
+}
+
+if (-not $PSBoundParameters.ContainsKey("Mode")) {
+    $modeAnswer = (Read-Host "Run mode: production or deep-debug? (production)").Trim().ToLowerInvariant()
+    if (-not $modeAnswer) {
+        $Mode = "production"
+    } elseif ($modeAnswer -in @("production", "deep-debug")) {
+        $Mode = $modeAnswer
+    } else {
+        throw "Run mode must be production or deep-debug."
+    }
 }
 
 if (-not $PSBoundParameters.ContainsKey("RetryUnsuccessful")) {
