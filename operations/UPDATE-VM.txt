@@ -1,0 +1,25 @@
+THE TINY "I CHANGED THE CODE AGAIN" CHECKLIST
+================================================
+
+FIRST, ON MY NORMAL COMPUTER:
+
+git status
+git add -A
+git commit -m "Describe what changed"
+git push origin master
+
+THEN, ON THE VM (do not do this while a campaign is running):
+
+cd C:\path\to\contact-outreach-automation
+git status
+git pull --ff-only origin master
+npm ci
+npx playwright install chromium
+.\operations\check-server.ps1
+
+FINALLY, RUN A CAMPAIGN:
+
+.\operations\run-campaign.ps1
+
+If "git status" on the VM shows local changes, STOP. Do not force the pull;
+first decide whether those VM changes must be saved.
