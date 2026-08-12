@@ -20,7 +20,7 @@ export const OPENROUTER_MODEL_ENVIRONMENT_VARIABLE = "OPENROUTER_MODEL";
 export const OPENROUTER_API_KEY_FILE_ENVIRONMENT_VARIABLE =
   "OPENROUTER_API_KEY_FILE";
 export const DEFAULT_OPENROUTER_API_KEY_FILE =
-  "C:\\Users\\olegl\\Documents\\LS\\JavaCommons\\src\\main\\java\\com\\leadspotting\\commons\\services\\chatGPT\\AbstractChatGPT.java";
+  "C:\\Users\\olegl\\Documents\\PW\\OPEN_AI.txt";
 
 export const NAVIGATION_TIMEOUT_MS = 15_000;
 export const ACTION_TIMEOUT_MS = 5_000;
