@@ -19,7 +19,8 @@ npx playwright install chromium
 
 FINALLY, RUN A CAMPAIGN:
 
-.\operations\run-campaign.ps1
+Edit operations\scheduled-run-config.json, then start the configured Task
+Scheduler task. The task always runs operations\scheduled-run.ps1.
 
 If "git status" on the VM shows local changes, STOP. Do not force the pull;
 first decide whether those VM changes must be saved.

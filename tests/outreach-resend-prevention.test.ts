@@ -234,7 +234,7 @@ test("campaign synchronization deduplicates domains and preserves success", () =
 test("database runner CLI requires an explicit source mode and campaign", () => {
   assert.deepEqual(
     resolve_database_runner_options(
-      ["deep-debug", "--campaign-id", "7", "--retry-unsuccessful", "--preview"],
+      ["deep-debug", "--campaign-id", "7", "--retry-unsuccessful", "--preview", "--confirmed"],
       {},
     ),
     {
@@ -242,13 +242,13 @@ test("database runner CLI requires an explicit source mode and campaign", () => 
       runMode: "deep-debug",
       retryUnsuccessful: true,
       preview: true,
+      confirmed: true,
       outputRoot: "output/database",
     },
   );
 });
 
 test("database preview does not confirm, claim, or execute websites", async () => {
-  let confirmations = 0;
   let claims = 0;
   const repository: DatabaseCampaignRepository = {
     loadCampaign: async () => campaign_from_database_row({
@@ -270,11 +270,10 @@ test("database preview does not confirm, claim, or execute websites", async () =
   const summary = await run_database_campaign(
     {
       campaignId: 1, runMode: "production", retryUnsuccessful: false,
-      preview: true, outputRoot: "unused",
+      preview: true, confirmed: false, outputRoot: "unused",
     },
     {
       repository,
-      confirm: async () => { confirmations++; return true; },
       runCore: async () => { throw new Error("must not run"); },
       engine: "playwright",
       now: () => new Date("2026-01-01T00:00:00Z"),
@@ -282,11 +281,10 @@ test("database preview does not confirm, claim, or execute websites", async () =
   );
   assert.equal(summary.eligible, 1);
   assert.equal(summary.confirmed, false);
-  assert.equal(confirmations, 0);
   assert.equal(claims, 0);
 });
 
-test("database runner requires confirmation before claiming websites", async () => {
+test("database runner requires explicit unattended confirmation before claiming websites", async () => {
   let claims = 0;
   const repository: DatabaseCampaignRepository = {
     loadCampaign: async () => campaign_from_database_row({
@@ -306,10 +304,10 @@ test("database runner requires confirmation before claiming websites", async () 
   const summary = await run_database_campaign(
     {
       campaignId: 1, runMode: "production", retryUnsuccessful: false,
-      preview: false, outputRoot: "unused",
+      preview: false, confirmed: false, outputRoot: "unused",
     },
     {
-      repository, confirm: async () => false,
+      repository,
       runCore: async () => { throw new Error("must not run"); },
       engine: "playwright", now: () => new Date("2026-01-01T00:00:00Z"),
     },
@@ -363,11 +361,10 @@ test("database campaign continues after an ordinary website failure", async () =
   const summary = await run_database_campaign(
     {
       campaignId: 1, runMode: "production", retryUnsuccessful: false,
-      preview: false, outputRoot: directory,
+      preview: false, confirmed: true, outputRoot: directory,
     },
     {
       repository,
-      confirm: async () => true,
       runCore: async (request) => create_contact_outreach_outcome(
         create_form_failure_outcome(request.websiteUrl, "Fixture failure", "runtime.error"),
         create_email_failure_outcome(request.websiteUrl, "Fixture failure"),

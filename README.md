@@ -122,10 +122,13 @@ npm run db:verify
 Run a campaign by ID:
 
 ```powershell
-npm run outreach:database -- production --campaign-id 123
+npm run outreach:database -- production --campaign-id 123 --confirmed
 ```
 
 Database runs read their inputs from MySQL and persist attempt outcomes there. Reports and diagnostics remain local under `output/database/`.
+The explicit `--confirmed` flag authorizes live submissions for a non-interactive
+run. Prefer `operations/scheduled-run.ps1`, which supplies it only when the
+scheduled configuration has `confirmLiveSubmission` set to `true`.
 
 ## Optional AI fallback
 
