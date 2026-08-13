@@ -5,6 +5,10 @@ import type {
   MessageDisposition,
 } from "./forms_types_(Support).js";
 import { CAPTCHA_SELECTOR } from "./captcha_detection_(Deterministic).js";
+import {
+  form_semantic_sources,
+  type FormSemanticKey,
+} from "./form_semantics_(Deterministic).js";
 
 export interface ContactFormAssessment {
   accepted: boolean;
@@ -19,7 +23,17 @@ export async function assess_contact_form(
   locator: Locator,
 ): Promise<ContactFormAssessment> {
   return locator
-    .evaluate<ContactFormAssessment, string>((element, captcha_selector) => {
+    .evaluate<ContactFormAssessment, {
+      captchaSelector: string;
+      semanticSources: Record<FormSemanticKey, string>;
+    }>((element, input) => {
+      const captcha_selector = input.captchaSelector;
+      const semantic = Object.fromEntries(
+        Object.entries(input.semanticSources).map(([key, source]) => [
+          key,
+          new RegExp(source, "iu"),
+        ]),
+      ) as Record<FormSemanticKey, RegExp>;
       const controls = Array.from(
         element.querySelectorAll(
           'input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="reset"]), textarea, select, [contenteditable="true"]',
@@ -59,7 +73,10 @@ export async function assess_contact_form(
           rectangle.height > 0 &&
           (tag !== "a" ||
             candidate.getAttribute("role") === "button" ||
-            /send|submit|contact|request|inquir|enquir/i.test(semantics))
+            semantic.submit.test(semantics.normalize("NFKC")
+              .replace(/[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, "")
+              .replace(/[\u0591-\u05bd\u05bf-\u05c7]/g, "")
+              .toLowerCase()))
         );
       });
       const control_metadata = controls
@@ -80,6 +97,9 @@ export async function assess_contact_form(
           ]
             .filter(Boolean)
             .join(" ")
+            .normalize("NFKC")
+            .replace(/[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, "")
+            .replace(/[\u0591-\u05bd\u05bf-\u05c7]/g, "")
             .toLowerCase();
         })
         .join(" ");
@@ -95,6 +115,9 @@ export async function assess_contact_form(
             .join(" "),
         )
         .join(" ")
+        .normalize("NFKC")
+        .replace(/[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, "")
+        .replace(/[\u0591-\u05bd\u05bf-\u05c7]/g, "")
         .toLowerCase();
       const has_safe_progression = submit_controls.some((control) => {
         if (control.matches(captcha_selector) || control.closest(captcha_selector)) {
@@ -112,10 +135,13 @@ export async function assess_contact_form(
           .join(" ")
           .trim()
           .replace(/\s+/g, " ");
-        const exact_progression_label =
-          /^(?:next(?: step)?|continue|proceed)(?:\s*(?:→|>|»))?$/i.test(
-            label,
-          );
+        const exact_progression_label = new RegExp(
+          `^(?:${semantic.progression.source})(?:\\s*(?:→|>|»))?$`,
+          "iu",
+        ).test(label.normalize("NFKC")
+          .replace(/[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, "")
+          .replace(/[\u0591-\u05bd\u05bf-\u05c7]/g, "")
+          .toLowerCase());
         const explicit_non_submit =
           (tag === "button" && type === "button") ||
           (tag === "input" && type === "button") ||
@@ -124,7 +150,7 @@ export async function assess_contact_form(
             control.getAttribute("role") === "button" &&
             !control.getAttribute("href"));
         return (
-          /^(?:next(?: step)?|continue|proceed)$/i.test(label) &&
+          exact_progression_label &&
           explicit_non_submit
         );
       });
@@ -142,10 +168,15 @@ export async function assess_contact_form(
           .trim();
         return (
           ["submit", "image"].includes(type) ||
-          /send|submit|message|contact|request|inquir|enquir|finish|complete|talk/i.test(
-            label,
-          )
-        ) && !/^(?:next(?: step)?|continue|proceed)$/i.test(label);
+          semantic.submit.test(label.normalize("NFKC")
+            .replace(/[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, "")
+            .replace(/[\u0591-\u05bd\u05bf-\u05c7]/g, "")
+            .toLowerCase())
+        ) && !new RegExp(`^(?:${semantic.progression.source})$`, "iu")
+          .test(label.normalize("NFKC")
+            .replace(/[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, "")
+            .replace(/[\u0591-\u05bd\u05bf-\u05c7]/g, "")
+            .toLowerCase());
       });
       const context_container =
         element.closest("section, article, main") ?? element.parentElement;
@@ -162,44 +193,51 @@ export async function assess_contact_form(
       ]
         .filter(Boolean)
         .join(" ")
+        .normalize("NFKC")
+        .replace(/[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, "")
+        .replace(/[\u0591-\u05bd\u05bf-\u05c7]/g, "")
         .toLowerCase();
       const has_message =
         controls.some(
           (control) =>
             control.tagName.toLowerCase() === "textarea" ||
             control.getAttribute("contenteditable") === "true",
-        ) || /message|comment|inquiry|enquiry|details|description|additional information|questions?/.test(control_metadata);
+        ) || semantic.message.test(control_metadata.normalize("NFKC"));
       const has_email =
         controls.some(
           (control) => control.getAttribute("type")?.toLowerCase() === "email",
-        ) || /e-?mail/.test(control_metadata);
-      const has_identity =
-        /\b(first[ _-]?name|last[ _-]?name|full[ _-]?name|name|phone|mobile|telephone|company|organisation|organization|business|website|project)\b/.test(
-          control_metadata,
-        );
-      const has_business_or_project =
-        /company|organisation|organization|business|website|project|service|budget|challenge|goal/.test(
-          `${control_metadata} ${element.textContent?.toLowerCase() ?? ""}`,
-        );
+        ) || semantic.email.test(control_metadata.normalize("NFKC"));
+      const normalized_control_metadata = control_metadata.normalize("NFKC");
+      const has_identity = semantic.firstName.test(normalized_control_metadata) ||
+        semantic.lastName.test(normalized_control_metadata) ||
+        semantic.fullName.test(normalized_control_metadata) ||
+        semantic.phone.test(normalized_control_metadata) ||
+        semantic.company.test(normalized_control_metadata) ||
+        semantic.website.test(normalized_control_metadata);
+      const business_text = `${control_metadata} ${element.textContent ?? ""}`
+        .normalize("NFKC").toLowerCase();
+      const has_business_or_project = semantic.company.test(business_text) ||
+        /project|service|budget|challenge|goal|פרויקט|שירות|תקציב|אתגר|מטרה/u.test(business_text);
       const has_submit = submit_controls.length > 0;
-      const contact_pattern =
-        /contact|support|help|get[ -]?in[ -]?touch|reach[ -]?us|inquir|enquir|book(?: a)? (?:call|consultation)|schedule(?: a)? (?:call|consultation)|consultation|start(?: a| your)? project|work with us|request(?: a)? quote|request(?: a)? proposal|free audit|let['’]?s talk|talk to us|new business|hire us/;
-      const has_contact_context = contact_pattern.test(context);
+      const normalized_context = context.normalize("NFKC").toLowerCase();
+      const has_contact_context = semantic.contact.test(normalized_context);
       const has_search_or_login_context =
-        /sign[ -]?in|log[ -]?in/.test(context) ||
-        (/\bsearch\b/.test(context) && !has_message && !has_contact_context);
+        semantic.login.test(normalized_context) ||
+        (semantic.search.test(normalized_context) &&
+          !has_message && !has_contact_context);
       const has_route_context =
-        /directions?|route finder|calculate route|travel mode|wpgmza_input_(?:from|to)/.test(
-          context,
-        ) && !has_message;
+        semantic.directions.test(normalized_context) && !has_message;
       const has_newsletter_context =
-        /newsletter|subscribe|mailing list/.test(context) &&
+        semantic.newsletter.test(normalized_context) &&
           !has_message &&
           !has_business_or_project;
+      const has_job_context =
+        semantic.jobs.test(normalized_context);
       const has_negative_context =
         has_search_or_login_context ||
         has_route_context ||
-        has_newsletter_context;
+        has_newsletter_context ||
+        has_job_context;
 
       // Some legitimate contact/inquiry forms intentionally collect only
       // identity and email information. They are safe to submit when the
@@ -264,6 +302,8 @@ export async function assess_contact_form(
           reason = "form has route/directions semantics";
         else if (has_search_or_login_context)
           reason = "form has search or login semantics";
+        else if (has_job_context)
+          reason = "form has job-application semantics";
         else if (!has_submit) reason = "form has no visible submit control";
         else if (!has_email) reason = "form has no visible email control";
         else if (!has_message && !has_contact_context)
@@ -281,7 +321,10 @@ export async function assess_contact_form(
         messageDisposition: has_message ? "unresolved" : "notOffered",
         signals,
       };
-    }, CAPTCHA_SELECTOR)
+    }, {
+      captchaSelector: CAPTCHA_SELECTOR,
+      semanticSources: form_semantic_sources(),
+    })
     .catch((error: unknown) => ({
       accepted: false,
       classification: "rejected" as const,

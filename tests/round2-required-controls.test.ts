@@ -92,6 +92,26 @@ test("Round 2 completes active native required controls deterministically", asyn
   await page.close();
 });
 
+test("Round 2 skips Hebrew dropdown placeholders", async () => {
+  const page = await browser.newPage();
+  await page.setContent(`
+    <form>
+      <select name="department" required>
+        <option value="">נא לבחור מחלקה</option>
+        <option value="sales">מכירות</option>
+      </select>
+    </form>
+  `);
+  const report = await satisfy_undefined_field_fallback(
+    page.locator("form"),
+    CONTACT_REQUEST,
+  );
+  assert.equal(await page.locator("select").inputValue(), "sales");
+  assert.equal(report.summary.dropdownsSelected, 1);
+  assert.equal(report.summary.unresolvedActiveRequiredControls, 0);
+  await page.close();
+});
+
 test("Round 2 completes uniquely scoped simple ARIA widgets", async () => {
   const page = await browser.newPage();
   await page.setContent(`

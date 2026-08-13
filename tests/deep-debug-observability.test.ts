@@ -352,6 +352,16 @@ test("deep-debug recorder and workflow artifacts", async (context) => {
   });
 });
 
+test("keeps Hebrew success evidence bounded and redacted", async () => {
+  const outcome = await run_deep_debug("/hebrew-success", "hebrew-success");
+  assert.equal(outcome.status, "SUCCESS", JSON.stringify(outcome));
+  assert.equal(outcome.submissionConfirmed, true);
+  assert.equal(outcome.deepDebug?.artifactErrorCount, 0);
+  const artifacts = await read_text_artifacts(outcome.deepDebug!.artifactDirectory);
+  assert.match(artifacts, /פנייתך התקבלה/u);
+  assert_no_contact_values(artifacts);
+});
+
 async function run_deep_debug(path: string, name: string) {
   const directory = join(temporary_directory, name);
   const input_path = join(directory, "input.json");
@@ -379,6 +389,20 @@ async function run_deep_debug(path: string, name: string) {
 }
 
 function page_for_path(path: string): string {
+  if (path === "/hebrew-success") {
+    return `<!doctype html><html dir="rtl"><body><main><h1>צור קשר</h1>
+      <form id="contact">
+        <label>שם מלא <input name="x1" required></label>
+        <label>אימייל <input name="x2" required></label>
+        <label>טלפון <input name="x3"></label>
+        <label>הודעה <textarea name="x4" required></textarea></label>
+        <button type="submit">שליחת הודעה</button>
+      </form><div id="status" role="status"></div></main>
+      <script>document.querySelector('#contact').addEventListener('submit', event => {
+        event.preventDefault();
+        document.querySelector('#status').textContent = 'תודה, פנייתך התקבלה';
+      });</script></body></html>`;
+  }
   const hidden_required =
     path === "/validation"
       ? '<input id="hidden-required" name="security_quiz" required style="display:none">'

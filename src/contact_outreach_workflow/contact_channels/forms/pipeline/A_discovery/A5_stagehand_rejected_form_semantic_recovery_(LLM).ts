@@ -12,6 +12,7 @@ import { create_page_intelligence_scope } from "../../../../shared_files_orchest
 import type { Frame, Locator, Page } from "playwright";
 
 const BUSINESS_INQUIRY_CLASSIFICATION_INSTRUCTION = [
+  "The visible interface may be in English, Hebrew, or a mixture of both languages.",
   "Classify the purpose of this one visible form.",
   "A business contact inquiry lets a prospective customer describe a project, service need, quote request, consultation, or other business request to the organization.",
   "Do not classify newsletter signup, search, login/account access, route/directions, job applications, or unrelated forms as business contact inquiries.",

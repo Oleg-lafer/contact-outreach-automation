@@ -1,6 +1,7 @@
 import type { Locator } from "playwright";
 import type { ContactFormCandidate } from "../../shared_files_forms/forms_types_(Support).js";
 import { page_contains_captcha } from "../../shared_files_forms/captcha_detection_(Deterministic).js";
+import { matches_form_semantic } from "../../shared_files_forms/form_semantics_(Deterministic).js";
 
 /*
  * TOP LEVEL WORKFLOW:
@@ -86,12 +87,8 @@ export async function check_required_privacy_consent(
         .toLowerCase();
     });
 
-    const is_privacy_consent = /privacy|terms|consent|agree|data processing/.test(
-      metadata,
-    );
-    const is_marketing_consent = /marketing|newsletter|promotion|offers/.test(
-      metadata,
-    );
+    const is_privacy_consent = matches_form_semantic("privacy", metadata);
+    const is_marketing_consent = matches_form_semantic("marketing", metadata);
     if (is_privacy_consent && !is_marketing_consent && (await checkbox.isEnabled())) {
       await checkbox.check();
       checked_any = true;

@@ -33,6 +33,12 @@ Both modes execute the same operational pipeline:
    and correlated network evidence.
 6. Normalize and return the forms-channel outcome.
 
+English and Hebrew interface semantics are always active in both modes. This
+does not translate supplied contact values and must not introduce additional
+navigation, retries, submission attempts, or AI calls. Keep a future language
+profile only as a low-risk possibility at centralized semantic boundaries;
+never compromise the single bilingual pipeline to prepare for it.
+
 ## Arithmetic Submission Signal Scoring
 
 Use **Arithmetic Submission Signal Scoring** as the canonical name for the

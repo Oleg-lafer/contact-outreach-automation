@@ -17,6 +17,7 @@ import { assess_contact_form } from "../../shared_files_forms/contact_form_inten
 import type { PageIntelligence } from "../../../../shared_files_orchestrator/page_intelligence_(Integration).js";
 import type { DeepDebugContext } from "../../shared_files_forms/deep_debug_types_(Support).js";
 import { assess_required_control_inventory } from "../../shared_files_forms/required_control_inventory_(Deterministic).js";
+import { matches_form_semantic } from "../../shared_files_forms/form_semantics_(Deterministic).js";
 import { dismiss_cookie_obstruction } from "../../../../shared_files_orchestrator/page_obstructions_(Deterministic).js";
 import {
   populate_form_like_container_fields,
@@ -559,29 +560,28 @@ function unresolved_deterministic_blocker(
   if (!reason) {
     return undefined;
   }
-  const normalized = reason.toLowerCase();
   const required: PopulatedField[] = [];
-  if (!allows_missing_message && /message|comment|inquir|enquir/.test(normalized)) {
+  if (!allows_missing_message && matches_form_semantic("message", reason)) {
     required.push("message");
   }
-  if (/e-?mail/.test(normalized)) required.push("email");
-  if (/phone|mobile|telephone/.test(normalized)) required.push("phone");
+  if (matches_form_semantic("email", reason)) required.push("email");
+  if (matches_form_semantic("phone", reason)) required.push("phone");
   if (
-    /name/.test(normalized) &&
-    !/company|business|organi[sz]ation|employer/.test(normalized)
+    matches_form_semantic("fullName", reason) &&
+    !matches_form_semantic("company", reason)
   ) {
     required.push("name");
   }
-  if (/company|business|organi[sz]ation|employer/.test(normalized)) {
+  if (matches_form_semantic("company", reason)) {
     required.push("company");
   }
-  if (/job[ _-]?title|job[ _-]?role|position|designation|occupation/.test(normalized)) {
+  if (matches_form_semantic("role", reason)) {
     required.push("role");
   }
-  if (/website|web[ _-]?site|domain|company[ _-]?url/.test(normalized)) {
+  if (matches_form_semantic("website", reason)) {
     required.push("website");
   }
-  if (/country|nation/.test(normalized)) required.push("country");
+  if (matches_form_semantic("country", reason)) required.push("country");
   return required.length > 0 &&
     required.every((field) => populated_fields.has(field))
     ? undefined
@@ -835,7 +835,8 @@ function apply_unknown_control_population(
       (record) =>
         (record.action === "selectedCheckbox" ||
           record.action === "selectedCustomChoice") &&
-        /privacy|terms|consent|agree|data processing/i.test(
+        matches_form_semantic(
+          "privacy",
           [
             record.name,
             record.id,

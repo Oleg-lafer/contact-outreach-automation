@@ -125,6 +125,16 @@ and all channel pages.
 - Bounded Stagehand fallbacks remain optional behind
   `CONTACT_FORM_ENGINE=stagehand`.
 
+## Interface Languages
+
+- Deterministic English and Hebrew interface recognition is always enabled in
+  the same workflow; it is not a runtime mode or configuration switch.
+- Preserve supplied campaign values verbatim. Interface recognition must not
+  translate, rewrite, or generate outreach content.
+- Keep textual semantics centralized and language-neutral structural evidence
+  separate. A possible future language profile is secondary to present-day
+  correctness, safety, clarity, and stability.
+
 ## Validation
 
 After each meaningful code change, Codex must use its judgment to select and

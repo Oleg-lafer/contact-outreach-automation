@@ -58,24 +58,25 @@ After validation, Codex must report:
 
 ## Test File Dictionary
 
-- `contact-form-poc.test.ts` - broad local-server workflow regression suite:
+- `contact-form-poc.test.ts` - broad local-server workflow regression suite,
+  including English, Hebrew, and mixed-language end-to-end behavior:
   discovery, route following, multi-step forms, population, validation,
   submission evidence, CAPTCHA blocking, input modes, queue updates, and
   reporting. Use for behavior spanning multiple form stages or the public
   orchestrator.
-- `contact-discovery-upgrade.test.ts` - macro route scoring/deduplication and
+- `contact-discovery-upgrade.test.ts` - bilingual macro route scoring/deduplication and
   focused form-intent/discovery behavior, including same-page anchors,
   no-message forms, newsletters, diagnostics, and route failure reasons.
-- `round2-required-controls.test.ts` - deterministic completion of required
+- `round2-required-controls.test.ts` - bilingual deterministic completion of required
   native and ARIA controls, duplicate controls, conditional visibility, and
   unsafe unresolved-field behavior.
-- `round3-submission-uncertainty.test.ts` - authoritative submission,
+- `round3-submission-uncertainty.test.ts` - bilingual authoritative submission,
   rejection, contradiction, network/message evidence, redaction, and bounded
   cookie-consent obstruction handling.
 - `email-discovery-channel.test.ts` - email extraction, normalization,
   filtering, page-plan bounds, page isolation, partial coverage, outcome
   semantics, and email report fields.
-- `meeting-discovery-channel.test.ts` - scheduling-provider and generic meeting
+- `meeting-discovery-channel.test.ts` - English/Hebrew scheduling-provider and generic meeting
   link classification, widget discovery, deduplication, page isolation,
   partial coverage, outcome semantics, and meeting report fields.
 - `contact-outreach-architecture.test.ts` - aggregate channel contracts,

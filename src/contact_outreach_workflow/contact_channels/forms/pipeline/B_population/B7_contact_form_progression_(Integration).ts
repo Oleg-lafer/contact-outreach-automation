@@ -31,9 +31,10 @@ const PROGRESSION_CONTROL_SELECTOR = [
   '[role="button"]:not(button):not(input):not([href])',
 ].join(", ");
 const PROGRESSION_LABEL =
-  /^(?:next(?: step)?|continue|proceed)(?:\s*(?:→|>|»))?$/i;
+  /^(?:next(?: step)?|continue|proceed|הבא|לשלב הבא|המשך|המשיכו|קדימה)(?:\s*(?:→|>|»))?$/iu;
 const STATE_CHANGE_TIMEOUT_MS = 3_000;
-const EXACT_PROGRESSION_LABEL = /^(?:next(?: step)?|continue|proceed)$/i;
+const EXACT_PROGRESSION_LABEL =
+  /^(?:next(?: step)?|continue|proceed|הבא|לשלב הבא|המשך|המשיכו|קדימה)$/iu;
 
 export interface ContactFormProgressionResult {
   progressed: boolean;
@@ -248,7 +249,7 @@ async function observe_and_advance_with_page_intelligence(
   deep_debug?: DeepDebugContext,
 ): Promise<ContactFormProgressionResult> {
   const instruction = [
-    "Locate one visible non-submit control inside the selected multi-step contact form whose exact purpose is Next, Continue, or Proceed.",
+    "Locate one visible non-submit control inside the selected multi-step contact form whose exact purpose is Next, Continue, or Proceed. The visible interface may be in English, Hebrew, or a mixture of both languages.",
     "Return one click action with no arguments.",
     "Do not select Send, Submit, Request, Book, Finish, CAPTCHA, consent, navigation, or any control outside the selected form.",
   ].join(" ");

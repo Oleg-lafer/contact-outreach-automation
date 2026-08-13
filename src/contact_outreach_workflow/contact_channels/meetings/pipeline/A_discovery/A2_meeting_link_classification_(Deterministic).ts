@@ -4,13 +4,21 @@ import type {
   MeetingProvider,
   MeetingSchedulingLink,
 } from "../../shared_files_meetings/meeting_types_(Support).js";
+import {
+  normalize_bilingual_text,
+  safely_decode_url_text,
+} from "../../../../shared_files_orchestrator/bilingual_text_(Deterministic).js";
 
-const BUSINESS_MEETING_PATTERN =
-  /\b(?:book|schedule)\s+(?:a\s+)?(?:meeting|call|demo|consultation|discovery(?:\s+call)?|strategy(?:\s+session)?|time)\b|\b(?:talk|speak)\s+(?:to|with)\s+(?:sales|an?\s+expert|our\s+team|us)\b|\bmeet\s+with\s+(?:sales|an?\s+expert|our\s+team|us)\b/i;
+const EN_BUSINESS_MEETING = String.raw`\b(?:book|schedule)\s+(?:a\s+)?(?:meeting|call|demo|consultation|discovery(?:\s+call)?|strategy(?:\s+session)?|time)\b|\b(?:talk|speak)\s+(?:to|with)\s+(?:sales|an?\s+expert|our\s+team|us)\b|\bmeet\s+with\s+(?:sales|an?\s+expert|our\s+team|us)\b`;
+const HE_BUSINESS_MEETING = String.raw`קבעו פגישה|קביעת פגישה|תיאום פגישה|הזמנת פגישה|קבעו שיחה|תיאום שיחה|שיחת ייעוץ|פגישת ייעוץ|שיחת היכרות|פגישת היכרות|הדגמה|דמו|דברו עם המכירות|שיחה עם מומחה|פגישה עם הצוות`;
+const BUSINESS_MEETING_PATTERN = new RegExp(
+  `(?:${EN_BUSINESS_MEETING})|(?:${HE_BUSINESS_MEETING})`,
+  "iu",
+);
 const EXCLUDED_CONTEXT_PATTERN =
-  /\b(?:webinar|conference|class(?:es)?|course|training|workshop|interview|career(?:s)?|candidate|job|support|help\s*desk|medical|doctor|clinic|patient|therapy|therapist|dental|dentist|salon|spa|service\s+appointment|restaurant|table\s+reservation|hotel|room\s+reservation|rental)\b/i;
+  /\b(?:webinar|conference|class(?:es)?|course|training|workshop|interview|career(?:s)?|candidate|job|support|help\s*desk|medical|doctor|clinic|patient|therapy|therapist|dental|dentist|salon|spa|service\s+appointment|restaurant|table\s+reservation|hotel|room\s+reservation|rental)\b|וובינר|כנס|קורס|הדרכה|סדנה|ראיון עבודה|קריירה|מועמד|משרה|תמיכה|מוקד שירות|רופא|מרפאה|מטופל|טיפול|מטפל|רופא שיניים|מספרה|ספא|תור לשירות|מסעדה|הזמנת שולחן|מלון|הזמנת חדר|השכרה/iu;
 const EXCLUDED_PATH_PATTERN =
-  /(?:^|[-_/])(?:webinars?|conferences?|classes?|courses?|training|workshops?|interviews?|careers?|candidates?|jobs?|support|medical|doctors?|clinics?|patients?|therapy|dental|dentists?|salons?|spas?|restaurants?|reservations?|hotels?|rentals?)(?:[-_/]|$)/i;
+  /(?:^|[-_/])(?:webinars?|conferences?|classes?|courses?|training|workshops?|interviews?|careers?|candidates?|jobs?|support|medical|doctors?|clinics?|patients?|therapy|dental|dentists?|salons?|spas?|restaurants?|reservations?|hotels?|rentals?|וובינר|כנס|קורס|הדרכה|סדנה|ראיון|קריירה|דרושים|תמיכה|רופא|מרפאה|טיפול|מסעדה|הזמנה|מלון|השכרה)(?:[-_/]|$)/iu;
 const PROVIDER_MARKETING_PATH_PATTERN =
   /^\/(?:pricing|features|about|blog|login|signup|integrations|solutions|resources|contact|careers|docs|help|app)(?:\/|$)/i;
 
@@ -75,7 +83,7 @@ export function classify_meeting_candidate(
   const negative_searchable = normalize_text(
     `${candidate.label} ${candidate.context}`,
   );
-  const path = new URL(url).pathname;
+  const path = safely_decode_url_text(new URL(url).pathname);
   if (
     EXCLUDED_CONTEXT_PATTERN.test(negative_searchable) ||
     EXCLUDED_PATH_PATTERN.test(path)
@@ -220,7 +228,7 @@ function decode_url_searchable(url_value: string): string {
 }
 
 function normalize_text(value: string): string {
-  return value.trim().replace(/\s+/g, " ").slice(0, 1_000);
+  return normalize_bilingual_text(value).slice(0, 1_000);
 }
 
 function is_inspectable_frame(frame: Frame, target_origin: string): boolean {

@@ -1133,6 +1133,36 @@ test("submission masks populated values and activates exactly one validated cont
   );
 });
 
+test("submission AI validates one Hebrew submit control without adding actions", async () => {
+  await with_page(
+    `<form><div id="send" role="button" tabindex="0">שליחת הודעה</div></form>
+     <script>window.submitClicks = 0; document.querySelector('#send').onclick = () => { window.submitClicks += 1; };</script>`,
+    async (page) => {
+      const intelligence = new FakePageIntelligence({
+        observe: (request) => {
+          assert.match(request.instruction, /English, Hebrew/);
+          return [click_action("#send", "שליחת הודעה")];
+        },
+      });
+      const result = await attempt_stagehand_submission_fallback({
+        page,
+        pageIntelligence: intelligence,
+        candidate: candidate_for(page, page.locator("form")),
+        buttonAuditEvents: [],
+        submissionAlreadyAttempted: false,
+        redactionValues: [],
+      });
+      assert.equal(result.attempted, true, result.reason);
+      assert.equal(intelligence.observeCalls.length, 1);
+      assert.equal(intelligence.actCalls.length, 1);
+      assert.equal(
+        await page.evaluate(() => (window as unknown as { submitClicks: number }).submitClicks),
+        1,
+      );
+    },
+  );
+});
+
 test("submission AI ignores CAPTCHA markup and uses a non-CAPTCHA control", async () => {
   await with_page(
     `<form><div class="captcha-challenge"></div><div id="finish" role="button">Finish</div></form>`,

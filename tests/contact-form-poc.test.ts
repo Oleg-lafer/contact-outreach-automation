@@ -1732,6 +1732,16 @@ test("contact-form workflow scenarios", async (context) => {
   });
 });
 
+test("submits one mixed English-Hebrew form without rewriting campaign values", async () => {
+  const outcome = await run_for_path("/hebrew-mixed");
+  assert.equal(outcome.status, "SUCCESS", JSON.stringify(outcome));
+  assert.deepEqual(outcome.populatedFields, [
+    "name", "email", "phone", "message", "consent", "selection",
+  ]);
+  assert.equal(outcome.submissionAttempted, true);
+  assert.equal(outcome.submissionConfirmed, true);
+});
+
 type WorkflowOptions = NonNullable<
   Parameters<typeof run_contact_outreach_workflow>[1]
 >;
@@ -1804,6 +1814,31 @@ function page_for_path(path: string): string {
     case "/contact":
     case "/frame-form":
       return html(contactForm);
+    case "/hebrew-mixed":
+      return html(`
+        <main dir="rtl"><h1>Contact / צור קשר</h1><form id="hebrew-contact">
+          <label>שם מלא <input name="x1" required></label>
+          <label>אימייל <input name="x2" required></label>
+          <label>טלפון <input name="x3"></label>
+          <label>הודעה <textarea name="x4" required></textarea></label>
+          <label><input type="checkbox" name="privacy" required>אני מאשר את מדיניות הפרטיות</label>
+          <button type="submit">שליחת הודעה</button>
+        </form><div id="result" role="status"></div></main>
+        <script>
+          window.submitCount = 0;
+          document.querySelector('form').onsubmit = event => {
+            event.preventDefault();
+            window.submitCount += 1;
+            const data = new FormData(event.target);
+            const exact = data.get('x1') === 'Test User' &&
+              data.get('x2') === 'test@example.com' &&
+              data.get('x3') === '050-0000000' &&
+              data.get('x4') === 'Hello, I would like someone to contact me.';
+            document.querySelector('#result').textContent = exact && window.submitCount === 1
+              ? 'תודה, פנייתך התקבלה'
+              : 'אירעה שגיאה';
+          };
+        </script>`);
     case "/search-widget-contact":
       return html(search_widget_contact_form());
     case "/anchor-submit":
