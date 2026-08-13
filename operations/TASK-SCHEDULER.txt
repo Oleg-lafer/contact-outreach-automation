@@ -1,0 +1,83 @@
+CONTACT OUTREACH - TASK SCHEDULER SETUP
+=========================================
+
+VM REPOSITORY PATH:
+
+C:\Users\Administrator\Documents\contact-outreach-automation
+
+CONFIGURE THE RUN BEFORE STARTING THE TASK:
+
+C:\Users\Administrator\Documents\contact-outreach-automation\operations\scheduled-run-config.json
+
+Example configuration:
+
+{
+  "campaignId": 3,
+  "mode": "deep-debug",
+  "retryUnsuccessful": false,
+  "confirmLiveSubmission": true
+}
+
+TASK SCHEDULER SETUP:
+
+1. Open Task Scheduler.
+2. Click Create Task... (not Create Basic Task).
+
+GENERAL TAB:
+
+Name:
+Contact Outreach Scheduled Run
+
+Select:
+Run whether user is logged on or not
+Run with highest privileges
+
+ACTIONS TAB -> NEW:
+
+Action:
+Start a program
+
+Program/script:
+C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe
+
+Add arguments:
+-NoProfile -ExecutionPolicy Bypass -File "C:\Users\Administrator\Documents\contact-outreach-automation\operations\scheduled-run.ps1"
+
+Start in:
+C:\Users\Administrator\Documents\contact-outreach-automation
+
+SETTINGS TAB:
+
+Select:
+Allow task to be run on demand
+
+If the task is already running:
+Do not start a new instance
+
+For a long campaign, clear this option if it is selected:
+Stop the task if it runs longer than
+
+SAVE AND RUN:
+
+1. Click OK and enter the Windows account password if requested.
+2. Edit scheduled-run-config.json for the desired campaign run.
+3. Right-click Contact Outreach Scheduled Run.
+4. Click Run.
+
+CHECKING THE RUN:
+
+Task Scheduler status/history:
+Task Scheduler Library -> Contact Outreach Scheduled Run
+
+Console log folder:
+C:\Users\Administrator\Documents\contact-outreach-automation\output\scheduled-logs
+
+Campaign evidence folder:
+C:\Users\Administrator\Documents\contact-outreach-automation\output\database\campaign-<campaign-id>
+
+IMPORTANT:
+
+- There is no interactive RUN prompt.
+- Task Scheduler needs no campaign-specific arguments.
+- The task stops unless confirmLiveSubmission is exactly true.
+- Keep the VM powered on. You may disconnect RDP and shut down your personal PC.

@@ -1,0 +1,6 @@
+{
+  "campaignId": 3,
+  "mode": "deep-debug",
+  "retryUnsuccessful": false,
+  "confirmLiveSubmission": true
+}

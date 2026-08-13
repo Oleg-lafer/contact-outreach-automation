@@ -2,8 +2,6 @@ import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { loadEnvFile } from "node:process";
-import { createInterface } from "node:readline/promises";
-import { stdin as input, stdout as output } from "node:process";
 import { pathToFileURL } from "node:url";
 import { create_email_failure_outcome } from "./contact_channels/emails/pipeline/E_reporting/E1_email_reporting_(Support).js";
 import { create_form_failure_outcome } from "./contact_channels/forms/pipeline/D_reporting/D1_form_reporting_(Support).js";
@@ -40,6 +38,7 @@ export interface DatabaseRunnerOptions {
   runMode: AutomationRunMode;
   retryUnsuccessful: boolean;
   preview: boolean;
+  confirmed: boolean;
   outputRoot: string;
 }
 
@@ -59,7 +58,6 @@ export interface DatabaseRunSummary {
 
 interface DatabaseRunnerDependencies {
   repository: DatabaseCampaignRepository;
-  confirm: (message: string) => Promise<boolean>;
   runCore: typeof run_contact_outreach_core;
   engine?: AutomationEngine;
   now: () => Date;
@@ -97,13 +95,8 @@ export async function run_database_campaign(
 
   if (options.preview || candidates.length === 0) return base;
 
+  if (!options.confirmed) return base;
   const engine = dependencies.engine ?? resolve_automation_engine(undefined);
-  const confirmed = await dependencies.confirm(
-    `Campaign ${campaign.campaignId}: ${campaign.campaignName}\n` +
-    `Eligible websites: ${candidates.length}\nRun mode: ${options.runMode}\n` +
-    `Engine: ${engine}\nType RUN to start live submissions: `,
-  );
-  if (!confirmed) return base;
 
   const runId = format_run_id(now);
   const runDirectory = resolve(
@@ -220,11 +213,13 @@ export function resolve_database_runner_options(
   let campaignIdText = environment.OUTREACH_CAMPAIGN_ID;
   let retryUnsuccessful = false;
   let preview = false;
+  let confirmed = false;
   let outputRoot = "output/database";
   for (let index = 1; index < args.length; index++) {
     const argument = args[index];
     if (argument === "--retry-unsuccessful") retryUnsuccessful = true;
     else if (argument === "--preview") preview = true;
+    else if (argument === "--confirmed") confirmed = true;
     else if (argument === "--campaign-id") campaignIdText = args[++index];
     else if (argument === "--output-root") outputRoot = args[++index] ?? "";
     else throw new Error(`Unknown database runner argument: ${argument}`);
@@ -234,16 +229,7 @@ export function resolve_database_runner_options(
     throw new Error("--campaign-id or OUTREACH_CAMPAIGN_ID must be a positive integer.");
   }
   if (!outputRoot.trim()) throw new Error("--output-root must not be empty.");
-  return { campaignId, runMode, retryUnsuccessful, preview, outputRoot };
-}
-
-async function prompt_for_run(message: string): Promise<boolean> {
-  const terminal = createInterface({ input, output });
-  try {
-    return (await terminal.question(message)) === "RUN";
-  } finally {
-    terminal.close();
-  }
+  return { campaignId, runMode, retryUnsuccessful, preview, confirmed, outputRoot };
 }
 
 function resend_prevented_outcome(
@@ -271,7 +257,6 @@ async function main(): Promise<void> {
   try {
     const summary = await run_database_campaign(options, {
       repository,
-      confirm: prompt_for_run,
       runCore: run_contact_outreach_core,
       now: () => new Date(),
     });

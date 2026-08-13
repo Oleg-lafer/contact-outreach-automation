@@ -23,7 +23,7 @@ mirror `channels.forms` and are not a combined business-success metric.
 ## Run Modes
 
 - Local-only run: `npm run outreach:local -- <production|deep-debug> <input-json> <output-txt>`
-- Database-only run: `npm run outreach:database -- <production|deep-debug> --campaign-id <id>`
+- Database-only run: `npm run outreach:database -- <production|deep-debug> --campaign-id <id> --confirmed`
 - `npm run production`, `npm run deep-debug`, and `npm start` remain local-only aliases.
 
 Input/output source and diagnostic mode are independent. Local-only runs read
