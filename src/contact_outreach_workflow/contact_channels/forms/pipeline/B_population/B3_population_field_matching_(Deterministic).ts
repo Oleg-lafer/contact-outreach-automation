@@ -6,6 +6,7 @@ import type {
   PopulatedField,
 } from "../../shared_files_forms/forms_types_(Support).js";
 import type { DeepDebugContext } from "../../shared_files_forms/deep_debug_types_(Support).js";
+import { matches_form_semantic } from "../../shared_files_forms/form_semantics_(Deterministic).js";
 
 export const FILLABLE_CONTACT_CONTROL_SELECTOR =
   'input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="reset"]):not([type="checkbox"]):not([type="radio"]), textarea, select';
@@ -134,7 +135,7 @@ export function match_contact_field(
   const metadata = field.metadata;
 
   if (
-    (field.type === "email" || /e-?mail/.test(metadata)) &&
+    (field.type === "email" || matches_form_semantic("email", metadata)) &&
     !filled_kinds.has("email")
   ) {
     return {
@@ -145,7 +146,7 @@ export function match_contact_field(
   }
 
   if (
-    (field.type === "tel" || /phone|mobile|telephone/.test(metadata)) &&
+    (field.type === "tel" || matches_form_semantic("phone", metadata)) &&
     !filled_kinds.has("phone")
   ) {
     return {
@@ -157,9 +158,7 @@ export function match_contact_field(
 
   if (
     contact_request.company &&
-    /company|organisation|organization|employer|business[ _-]?name|agency[ _-]?name/.test(
-      metadata,
-    ) &&
+    matches_form_semantic("company", metadata) &&
     !filled_kinds.has("company")
   ) {
     return {
@@ -171,9 +170,7 @@ export function match_contact_field(
 
   if (
     contact_request.role &&
-    /job[ _-]?title|job[ _-]?role|professional[ _-]?role|position|designation|occupation|(^|\s)role(\s|$)/.test(
-      metadata,
-    ) &&
+    matches_form_semantic("role", metadata) &&
     !filled_kinds.has("role")
   ) {
     return {
@@ -185,10 +182,7 @@ export function match_contact_field(
 
   if (
     contact_request.website &&
-    (field.type === "url" ||
-      /web[ _-]?site|company[ _-]?url|business[ _-]?url|web[ _-]?address|domain/.test(
-        metadata,
-      )) &&
+    (field.type === "url" || matches_form_semantic("website", metadata)) &&
     !filled_kinds.has("website")
   ) {
     return {
@@ -200,7 +194,7 @@ export function match_contact_field(
 
   if (
     contact_request.country &&
-    /country|nation|country[ _-]?region/.test(metadata) &&
+    matches_form_semantic("country", metadata) &&
     !filled_kinds.has("country")
   ) {
     return {
@@ -212,7 +206,7 @@ export function match_contact_field(
 
   if (
     (field.tag === "textarea" ||
-      /message|comment|inquiry|enquiry|details|description/.test(metadata)) &&
+      matches_form_semantic("message", metadata)) &&
     !filled_kinds.has("message")
   ) {
     return {
@@ -223,7 +217,7 @@ export function match_contact_field(
   }
 
   if (
-    /first[ _-]?name|given[ _-]?name/.test(metadata) &&
+    matches_form_semantic("firstName", metadata) &&
     !filled_kinds.has("firstName")
   ) {
     return {
@@ -234,7 +228,7 @@ export function match_contact_field(
   }
 
   if (
-    /last[ _-]?name|family[ _-]?name|surname/.test(metadata) &&
+    matches_form_semantic("lastName", metadata) &&
     !filled_kinds.has("lastName")
   ) {
     return {
@@ -245,8 +239,11 @@ export function match_contact_field(
   }
 
   if (
-    /(^|\s)(full[ _-]?)?(your[ _-]?)?name(\s|$)/.test(metadata) &&
-    !/user[ _-]?name/.test(metadata) &&
+    matches_form_semantic("fullName", metadata) &&
+    !/user[ _-]?name|שם משתמש/u.test(metadata) &&
+    !matches_form_semantic("company", metadata) &&
+    !matches_form_semantic("firstName", metadata) &&
+    !matches_form_semantic("lastName", metadata) &&
     !filled_kinds.has("fullName")
   ) {
     return {

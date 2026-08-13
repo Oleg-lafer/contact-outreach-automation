@@ -36,6 +36,7 @@ import {
 import { recover_structurally_strong_rejected_form } from "./A5_stagehand_rejected_form_semantic_recovery_(LLM).js";
 
 const DISCOVERY_INSTRUCTION = [
+  "The visible interface may be in English, Hebrew, or a mixture of both languages.",
   "Locate one visible contact, inquiry, consultation, booking, quote, audit, project-start, or work-with-us form on the current page.",
   "If none is visible, locate one safe same-site navigation control most likely to reveal such a form.",
   "Return only an argument-free click action; a selector inside a form will be used only as locator evidence and will not be clicked.",
@@ -750,7 +751,7 @@ async function validate_navigation_target(
   if (!has_contact_route_intent(semantics)) {
     return { allowed: false, reason: "target has no supported contact or inquiry intent" };
   }
-  if (/delete|remove|unsubscribe|purchase|buy|pay|checkout/i.test(metadata.text)) {
+  if (/delete|remove|unsubscribe|purchase|buy|pay|checkout|מחק|הסר|ביטול הרשמה|רכישה|קנייה|תשלום/iu.test(metadata.text)) {
     return { allowed: false, reason: "target text describes a destructive action" };
   }
 

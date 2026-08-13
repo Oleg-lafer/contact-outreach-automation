@@ -165,7 +165,7 @@ export async function captcha_blocks_submit_activation(
             input.disabled || element.getAttribute("aria-disabled") === "true",
           submitLike:
             input.type === "submit" ||
-            /\b(send|submit|message|contact|request|continue|finish)\b/.test(
+            /\b(send|submit|message|contact|request|continue|finish)\b|שלח|שלחו|שליחה|הודעה|צור קשר|בקשה|המשך|סיום/u.test(
               label,
             ),
         };
@@ -192,7 +192,7 @@ export function add_captcha_network_rejection(
       const captcha_related =
         /captcha|recaptcha|hcaptcha|turnstile|challenge/i.test(evidence);
       const explicit_rejection =
-        /reject|denied|forbidden|invalid|failed|failure|required|blocked/i.test(
+        /reject|denied|forbidden|invalid|failed|failure|required|blocked|נדחה|נכשל|שגוי|לא תקין|חובה|נדרש|חסום/iu.test(
           evidence,
         );
       return (

@@ -185,7 +185,7 @@ function is_captcha_rejection(record: NetworkDebugRecord): boolean {
     /captcha|recaptcha|hcaptcha|turnstile|challenge/i.test(evidence) &&
     ((record.status ?? 0) >= 400 ||
       Boolean(record.failureText) ||
-      /reject|denied|forbidden|invalid|failed|failure|required|blocked/i.test(
+      /reject|denied|forbidden|invalid|failed|failure|required|blocked|נדחה|נכשל|שגוי|לא תקין|חובה|נדרש|חסום/iu.test(
         evidence,
       ))
   );
@@ -222,7 +222,7 @@ function score_network_record(record: NetworkDebugRecord): {
   let formLikeScore = 0;
 
   if (
-    /contact|form|lead|demo|request|inquiry|enquiry|message|submit|submission|book|schedule/.test(
+    /contact|form|lead|demo|request|inquiry|enquiry|message|submit|submission|book|schedule|צור.?קשר|טופס|פנייה|פניה|הודעה|שליחה|קביעת.?פגישה/u.test(
       searchable,
     )
   ) {
@@ -230,7 +230,7 @@ function score_network_record(record: NetworkDebugRecord): {
   }
 
   if (
-    /\b(email|phone|name|firstname|lastname|message|company|contact|lead|form)\b/.test(
+    /\b(email|phone|name|firstname|lastname|message|company|contact|lead|form)\b|אימייל|דוא["״']?ל|טלפון|שם|הודעה|חברה|טופס/u.test(
       searchable,
     )
   ) {

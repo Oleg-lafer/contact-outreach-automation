@@ -33,7 +33,7 @@ import {
 import { submit_actionability_failure_reason } from "./C3_submit_control_selection_(Deterministic).js";
 
 const SUBMISSION_OBSERVE_INSTRUCTION =
-  "Find exactly one enabled control inside the populated contact form that submits the form. Return only a click action. Do not click navigation, reset, cancel, scheduling, download, or CAPTCHA controls.";
+  "Find exactly one enabled control inside the populated contact form that submits the form. The visible interface may be in English, Hebrew, or a mixture of both languages. Return only a click action. Do not click navigation, reset, cancel, scheduling, download, or CAPTCHA controls.";
 
 export interface StagehandSubmissionFallbackResult {
   attempted: boolean;
@@ -540,12 +540,12 @@ async function validate_stagehand_submit_action(
         tag === "select" ||
         (tag === "input" && !["button", "image", "submit"].includes(type));
       const explicitly_unsafe =
-        /\b(cancel|reset|clear|back|previous|download|schedule|book|login|sign in|captcha|robot|human|challenge|verify)\b/.test(
+        /\b(cancel|reset|clear|back|previous|download|schedule|book|login|sign in|captcha|robot|human|challenge|verify)\b|ביטול|איפוס|נקה|חזרה|הקודם|הורדה|קביעת פגישה|התחברות|רובוט|אימות/u.test(
           metadata,
         );
       const positive_submit_signal =
         ["image", "submit"].includes(type) ||
-        /\b(send|submit|message|contact|enquir|inquir|request|continue|confirm|finish|complete|talk)\b|get in touch/.test(
+        /\b(send|submit|message|contact|enquir|inquir|request|continue|confirm|finish|complete|talk)\b|get in touch|שלח|שלחו|שליחה|הודעה|צור קשר|בקשה|המשך|אישור|סיום/u.test(
           metadata,
         );
       const button_semantics =

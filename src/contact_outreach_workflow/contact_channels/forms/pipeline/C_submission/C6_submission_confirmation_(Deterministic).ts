@@ -15,6 +15,10 @@ import type {
   SubmissionVisibleEvidence,
   SubmitControlSearchResult,
 } from "./C2_submission_types_(Support).js";
+import {
+  normalize_bilingual_text,
+  safely_decode_url_text,
+} from "../../../../shared_files_orchestrator/bilingual_text_(Deterministic).js";
 import { collect_visible_message_candidates } from "./C5_submission_observability_(Support).js";
 import {
   create_button_click_audit_event,
@@ -333,7 +337,9 @@ export async function wait_for_submission_confirmation(
     const current_url = page.url();
     if (
       current_url !== url_before_submission &&
-      /thank|success|confirm|submitted|complete/i.test(new URL(current_url).pathname)
+      /thank|success|confirm|submitted|complete|תודה|הצלחה|אישור|נשלח/iu.test(
+        safely_decode_url_text(new URL(current_url).pathname),
+      )
     ) {
       confirmation_evidence = "successUrl";
     }
@@ -482,6 +488,9 @@ function visible_success_message_matches(
     /thank you|thanks for|message (?:has been )?(?:sent|received)|successfully submitted|we(?:'ll| will) (?:be )?in touch/.test(
       normalized,
     ) ||
+    /תודה על פנייתך|תודה שפנית|תודה שיצרת קשר|פנייתך התקבלה|הפנייה התקבלה|הפניה התקבלה|הודעתך נשלחה בהצלחה|ההודעה נשלחה בהצלחה|הטופס נשלח בהצלחה|הפרטים נשלחו בהצלחה|ניצור (?:איתך|עמך) קשר|נחזור אלי(?:ך|יך) בהקדם/u.test(
+      normalized,
+    ) ||
     /l['’]enregistrement a [ée]t[ée] effectu[ée] avec succ[èe]s/.test(
       normalized,
     )
@@ -497,7 +506,7 @@ function classify_rejection_text(
     }
   | undefined {
   if (
-    /(?:captcha|recaptcha|hcaptcha|turnstile|not a robot|verify that you are not a robot).*(?:required|complete|verify|before submitting)|(?:required|complete|verify).*(?:captcha|recaptcha|hcaptcha|turnstile|robot)/.test(
+    /(?:captcha|recaptcha|hcaptcha|turnstile|not a robot|verify that you are not a robot).*(?:required|complete|verify|before submitting)|(?:required|complete|verify).*(?:captcha|recaptcha|hcaptcha|turnstile|robot)|(?:אימות|קאפצ['׳]?ה|רובוט).*(?:חובה|נדרש|יש להשלים|יש לאמת)|(?:יש להשלים|יש לאמת).*(?:אימות|רובוט)/u.test(
       normalized,
     )
   ) {
@@ -506,18 +515,21 @@ function classify_rejection_text(
   if (/email addresses? do not match|emails? (?:do not|don['’]t) match/.test(normalized)) {
     return { category: "validation", patternId: "email-values-mismatch" };
   }
+  if (/כתובת (?:ה)?(?:אימייל|דוא["״']?ל) (?:אינה|לא) תקינה|(?:אימייל|דוא["״']?ל) לא תקין/u.test(normalized)) {
+    return { category: "validation", patternId: "invalid-email-value" };
+  }
   if (/enter only numbers|only numbers (?:are )?allowed/.test(normalized)) {
     return { category: "validation", patternId: "numeric-value-required" };
   }
   if (
-    /required|mandatory|obligatoire|requis|campo obligatorio|seleccione una opci[oó]n|please complete|need to be completed|must accept (?:the )?(?:privacy|terms)|privacy terms|found errors in form|ne peut pas [êe]tre vide|не може да бъде празно|задължително|plot[ëe]soni|verplicht|obrigat[oó]rio/.test(
+    /required|mandatory|obligatoire|requis|campo obligatorio|seleccione una opci[oó]n|please complete|need to be completed|must accept (?:the )?(?:privacy|terms)|privacy terms|found errors in form|ne peut pas [êe]tre vide|не може да бъде празно|задължително|plot[ëe]soni|verplicht|obrigat[oó]rio|שדה חובה|חובה למלא|נא למלא|אנא מלא|אנא מלאו|יש למלא|נדרש למלא|יש לבחור|נא לבחור|יש לאשר (?:את )?(?:מדיניות הפרטיות|התנאים)/u.test(
       normalized,
     )
   ) {
     return { category: "validation", patternId: "post-submit-validation" };
   }
   if (
-    /please try again|unable to (?:send|submit)|could not (?:send|submit)|submission failed|message was not sent|an error occurred|^error(?:\s|:)/.test(
+    /please try again|unable to (?:send|submit)|could not (?:send|submit)|submission failed|message was not sent|an error occurred|^error(?:\s|:)|אירעה שגיאה|ארעה שגיאה|לא ניתן לשלוח|השליחה נכשלה|ההודעה לא נשלחה|נסה שוב|נסו שוב/u.test(
       normalized,
     )
   ) {
@@ -527,7 +539,7 @@ function classify_rejection_text(
 }
 
 function normalize_message_text(value: string): string {
-  return value.normalize("NFKC").trim().replace(/\s+/g, " ").toLowerCase();
+  return normalize_bilingual_text(value);
 }
 
 function redact_message_excerpt(
@@ -577,7 +589,7 @@ async function find_visible_confirmation_control(
       const metadata = (
         `${(await control.textContent()) ?? ""} ${(await control.getAttribute("value")) ?? ""} ${(await control.getAttribute("name")) ?? ""}`
       ).toLowerCase();
-      if (/confirm|continue|approve|review and send/.test(metadata)) {
+      if (/confirm|continue|approve|review and send|אשר|אישור|המשך|שלח סופית|שליחה סופית/u.test(metadata)) {
         return {
           control,
           reason: "",

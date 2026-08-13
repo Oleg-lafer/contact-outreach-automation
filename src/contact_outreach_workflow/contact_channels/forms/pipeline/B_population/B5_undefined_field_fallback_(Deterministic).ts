@@ -10,11 +10,12 @@ import {
   REQUIRED_CONTROL_INVENTORY_SELECTOR,
   type RequiredControlAssessment,
 } from "../../shared_files_forms/required_control_inventory_(Deterministic).js";
+import { matches_form_semantic } from "../../shared_files_forms/form_semantics_(Deterministic).js";
 
 const UNKNOWN_TEXT_FALLBACK_VALUE = "Hello";
 const REMAINING_CONTROL_SELECTOR = REQUIRED_CONTROL_INVENTORY_SELECTOR;
 const PLACEHOLDER_OPTION_TEXT_PATTERN =
-  /^(-+|choose(?:\s+.*)?|select(?:\s+.*)?|please\s+(?:choose|select)(?:\s+.*)?|pick one|topic)$/;
+  /^(-+|choose(?:\s+.*)?|select(?:\s+.*)?|please\s+(?:choose|select)(?:\s+.*)?|pick one|topic|בחר(?:ו)?(?:\s+.*)?|נא לבחור(?:\s+.*)?|יש לבחור(?:\s+.*)?|בחירה)$/u;
 const FIRST_OPTION_PLACEHOLDER_VALUE_PATTERN = /^$|^0$|^-1$|^none$|^null$/;
 const STYLED_DROPDOWN_OPENER_SELECTOR = [
   ".styledSelect",
@@ -796,32 +797,28 @@ function required_contact_value(
   ]
     .join(" ")
     .toLowerCase();
-  if (state.type === "email" || /e-?mail/.test(metadata)) {
+  if (state.type === "email" || matches_form_semantic("email", metadata)) {
     return contact_request.email;
   }
-  if (state.type === "tel" || /phone|mobile|telephone/.test(metadata)) {
+  if (state.type === "tel" || matches_form_semantic("phone", metadata)) {
     return contact_request.phone;
   }
   if (
     state.type === "url" ||
-    /website|web site|site url|company url/.test(metadata)
+    matches_form_semantic("website", metadata)
   ) {
     return contact_request.website;
   }
-  if (
-    /full[ _-]?name|your[ _-]?name|contact[ _-]?name|confirm.*name|repeat.*name/.test(
-      metadata,
-    )
-  ) {
-    return contact_request.name;
-  }
-  if (/company|organisation|organization|business/.test(metadata)) {
+  if (matches_form_semantic("company", metadata)) {
     return contact_request.company;
   }
-  if (/job[ _-]?title|role|position|occupation/.test(metadata)) {
+  if (matches_form_semantic("fullName", metadata)) {
+    return contact_request.name;
+  }
+  if (matches_form_semantic("role", metadata)) {
     return contact_request.role;
   }
-  if (/country|nation/.test(metadata)) {
+  if (matches_form_semantic("country", metadata)) {
     return contact_request.country;
   }
   return undefined;

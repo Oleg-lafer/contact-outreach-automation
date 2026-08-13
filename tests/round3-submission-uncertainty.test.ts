@@ -325,6 +325,54 @@ test("Round 3 recognizes the evidenced French success phrase", async () => {
   });
 });
 
+test("Round 3 recognizes Hebrew success and rejection messages", async () => {
+  await with_page(async (page) => {
+    await page.setContent(`<div role="status">תודה, פנייתך התקבלה ונחזור אליך בהקדם</div>`);
+    assert.equal(await has_visible_success_message(page), true);
+    await page.setContent(`<main><h1>תודה שביקרתם באתר</h1><a href="/contact">צור קשר</a></main>`);
+    assert.equal(await has_visible_success_message(page), false);
+  });
+
+  const evidence = classify_new_submission_messages([
+    {
+      selector: '[role="alert"]',
+      frameUrl: "https://fixture.test/contact",
+      text: "שדה חובה — נא למלא כתובת אימייל",
+    },
+    {
+      selector: ".captcha-error",
+      frameUrl: "https://fixture.test/contact",
+      text: "יש להשלים אימות שאינך רובוט",
+    },
+    {
+      selector: ".server-error",
+      frameUrl: "https://fixture.test/contact",
+      text: "אירעה שגיאה, נסו שוב",
+    },
+  ]);
+  assert.deepEqual(evidence.map((item) => item.category), [
+    "validation",
+    "captcha",
+    "generic",
+  ]);
+});
+
+test("Round 3 handles Hebrew cookie controls with privacy-first ordering", async () => {
+  await with_page(async (page) => {
+    await page.setContent(`
+      <button id="submit" style="position:fixed;left:40px;top:40px">Send</button>
+      <div role="dialog" aria-modal="true" style="position:fixed;inset:0;z-index:10">
+        <p>העדפות פרטיות ועוגיות</p>
+        <button onclick="this.parentElement.remove()">קבל הכל</button>
+        <button onclick="this.parentElement.remove()">עוגיות הכרחיות בלבד</button>
+        <button onclick="this.parentElement.remove()">דחו הכל</button>
+      </div>
+    `);
+    const actions = await dismiss_cookie_obstructions(page);
+    assert.equal(actions[0]?.action, "reject");
+  });
+});
+
 test("Round 3 dismisses supported CMP families with privacy-first actions", async () => {
   const fixtures = [
     {

@@ -11,6 +11,7 @@ import type {
 } from "../../shared_files_forms/forms_types_(Support).js";
 import type { DeepDebugContext } from "../../shared_files_forms/deep_debug_types_(Support).js";
 import { dismiss_cookie_obstructions } from "../../../../shared_files_orchestrator/page_obstructions_(Deterministic).js";
+import { normalize_bilingual_text } from "../../../../shared_files_orchestrator/bilingual_text_(Deterministic).js";
 import type {
   SubmitCandidateDebugInfo,
   SubmitControlSearchResult,
@@ -515,7 +516,7 @@ function score_submit_candidate(candidate: {
   const type = candidate.type.toLowerCase();
 
   if (candidate.tag === "a") {
-    const explicitly_submits = /\b(send|submit)\b/.test(label);
+    const explicitly_submits = /\b(send|submit)\b|שלח|שלחו|שליחה|שליחת הודעה/u.test(label);
     const non_navigational = is_non_navigational_href(candidate.href);
     if (!explicitly_submits || !non_navigational) {
       negativeSignals.push(
@@ -527,10 +528,10 @@ function score_submit_candidate(candidate: {
     }
   }
 
-  if (/^(submit|send|send message|send request|send inquiry|send lead)$/.test(label)) {
+  if (/^(submit|send|send message|send request|send inquiry|send lead|שלח|שלחו|שליחה|שלח הודעה|שליחת הודעה|שליחת פנייה|שליחת פניה)$/u.test(label)) {
     value += 100;
     positiveSignals.push("exact submit/send label");
-  } else if (/\b(submit|send)\b/.test(label)) {
+  } else if (/\b(submit|send)\b|שלח|שלחו|שליחה/u.test(label)) {
     value += 70;
     positiveSignals.push("submit/send label");
   }
@@ -540,7 +541,7 @@ function score_submit_candidate(candidate: {
     positiveSignals.push("native submit type");
   }
 
-  if (/\b(contact|request|get in touch)\b/.test(label)) {
+  if (/\b(contact|request|get in touch)\b|צור קשר|צרו קשר|פנו אלינו|בקשה/u.test(label)) {
     value += 20;
     positiveSignals.push("contact/request label");
   }
@@ -550,7 +551,7 @@ function score_submit_candidate(candidate: {
     positiveSignals.push("button type control");
   }
 
-  if (/\b(schedule|meeting|demo|book|download|extension|learn more|pricing)\b/.test(metadata)) {
+  if (/\b(schedule|meeting|demo|book|download|extension|learn more|pricing)\b|הורדה|תוסף|מידע נוסף|מחירון/u.test(metadata)) {
     value -= 80;
     negativeSignals.push("secondary CTA label");
   }
@@ -648,7 +649,7 @@ function distance_after_fields(
 }
 
 function normalize_submit_candidate_label(value: string): string {
-  return value.trim().replace(/\s+/g, " ").toLowerCase();
+  return normalize_bilingual_text(value);
 }
 
 async function find_send_like_submit_control(
@@ -674,13 +675,13 @@ async function find_send_like_submit_control(
     const href = (await control.getAttribute("href")) ?? "";
     if (
       tag === "a" &&
-      (!/\b(send|submit)\b/.test(metadata) || !is_non_navigational_href(href))
+      (!/\b(send|submit)\b|שלח|שלחו|שליחה/u.test(metadata) || !is_non_navigational_href(href))
     ) {
       continue;
     }
-    let score = /\b(send|submit)\b/.test(metadata)
+    let score = /\b(send|submit)\b|שלח|שלחו|שליחה/u.test(metadata)
       ? 100
-      : /\b(request|get in touch)\b/.test(metadata)
+      : /\b(request|get in touch)\b|צור קשר|צרו קשר|פנו אלינו|בקשה/u.test(metadata)
         ? 30
         : 0;
     if (type === "submit") {

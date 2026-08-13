@@ -12,7 +12,7 @@ import type {
 const FORM_PROVIDER_PATTERN =
   /hubspot|hsforms|marketo|pardot|salesforce|jotform|typeform|formstack|wufoo|gravityforms|gravity_form|calendly|cal\.com/i;
 const FORM_RESOURCE_PATTERN =
-  /contact|inquir|enquir|lead|form|quote|consult|booking|book-a-call|request|message|submit|submission/i;
+  /contact|inquir|enquir|lead|form|quote|consult|booking|book-a-call|request|message|submit|submission|צור.?קשר|טופס|הצעת.?מחיר|ייעוץ|פגישה|פנייה|פניה|הודעה|שליחה/iu;
 const ANALYTICS_PATTERN =
   /google-analytics|googletagmanager|doubleclick|segment\.io|hotjar|clarity|facebook\.com\/tr|linkedin\.com\/px|analytics/i;
 
@@ -97,7 +97,7 @@ export async function collect_discovery_page_signals(
             .replace(/\s+/g, " "),
         )
         .filter((label) =>
-          /contact|get in touch|inquir|enquir|consult|book|schedule|quote|proposal|start.*project|work with us|audit|talk to us/i.test(
+          /contact|get in touch|inquir|enquir|consult|book|schedule|quote|proposal|start.*project|work with us|audit|talk to us|צור קשר|צרו קשר|דברו איתנו|פנו אלינו|השאירו פרטים|הצעת מחיר|ייעוץ|קבעו פגישה|תיאום פגישה/iu.test(
             label,
           ),
         )

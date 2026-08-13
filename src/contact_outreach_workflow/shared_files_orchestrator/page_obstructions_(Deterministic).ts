@@ -3,6 +3,7 @@ import type {
   CookieConsentVendor,
   PageObstructionAction,
 } from "./outreach_types_(Support).js";
+import { normalize_bilingual_text } from "./bilingual_text_(Deterministic).js";
 
 const MAX_COOKIE_ACTIONS = 3;
 const COOKIE_CONTAINER_SELECTOR = [
@@ -33,7 +34,7 @@ const COOKIE_CONTAINER_SELECTOR = [
 ].join(", ");
 
 const COOKIE_TEXT =
-  /cookie|consent|privacy|tracking|personal data|confidentialit|vie priv[ée]e|donn[ée]es personnelles|datenschutz|einwilligung|zustimmung|functionele|toestemming|privacidad|seguimiento|dados pessoais|privacidade|куки|согласие/i;
+  /cookie|consent|privacy|tracking|personal data|confidentialit|vie priv[ée]e|donn[ée]es personnelles|datenschutz|einwilligung|zustimmung|functionele|toestemming|privacidad|seguimiento|dados pessoais|privacidade|куки|согласие|עוגיות|פרטיות|הסכמה|מידע אישי|נתונים אישיים/iu;
 const CONTROL_SELECTOR = [
   "button",
   '[role="button"]',
@@ -366,30 +367,30 @@ function rank_known_vendor_control(
 function rank_cookie_control(
   label: string,
 ): { score: number; action: PageObstructionAction["action"] } | undefined {
-  const normalized = label.normalize("NFKC").toLowerCase();
+  const normalized = normalize_bilingual_text(label);
   if (
-    /reject|decline|deny|refuse|do not allow|rejeter|refuser|rechazar|ablehnen|weigern|alles afwijzen|weigeren|recusar|rejeitar|отклонить|отказать/.test(
+    /reject|decline|deny|refuse|do not allow|rejeter|refuser|rechazar|ablehnen|weigern|alles afwijzen|weigeren|recusar|rejeitar|отклонить|отказать|דחה|דחו|סירוב|לא מסכים|לא מאשר|לא לאפשר/u.test(
       normalized,
     )
   ) {
     return { score: 500, action: "reject" };
   }
   if (
-    /necessary|essential|functional only|save preferences|uniquement n[ée]cessaires|nur notwendige|enkel functionele|solo necesarias|apenas necess[áa]rios|только необходимые/.test(
+    /necessary|essential|functional only|save preferences|uniquement n[ée]cessaires|nur notwendige|enkel functionele|solo necesarias|apenas necess[áa]rios|только необходимые|הכרחיות בלבד|חיוניות בלבד|עוגיות הכרחיות|עוגיות חיוניות|שמור העדפות/u.test(
       normalized,
     )
   ) {
     return { score: 450, action: "necessaryOnly" };
   }
   if (
-    /continue without|without accepting|close|dismiss|fermer|schlie(?:ß|ss)en|sluiten|cerrar|fechar|закрыть|\u00d7|\u2715/.test(
+    /continue without|without accepting|close|dismiss|fermer|schlie(?:ß|ss)en|sluiten|cerrar|fechar|закрыть|המשך ללא אישור|המשך בלי לאשר|סגור|סגירה|\u00d7|\u2715/u.test(
       normalized,
     )
   ) {
     return { score: 400, action: "close" };
   }
   if (
-    /accept|allow|agree|okay|^ok$|got it|accepter|tout accepter|akzeptieren|alles accepteren|aceptar|aceitar|разрешить|принять|хорошо/.test(
+    /accept|allow|agree|okay|^ok$|got it|accepter|tout accepter|akzeptieren|alles accepteren|aceptar|aceitar|разрешить|принять|хорошо|אישור|אשר|מאשר|מסכים|קבל|קבל הכל|אפשר הכל/u.test(
       normalized,
     )
   ) {

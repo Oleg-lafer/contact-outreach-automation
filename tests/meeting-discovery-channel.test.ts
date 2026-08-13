@@ -182,6 +182,40 @@ test("classifies provider and generic business scheduling candidates determinist
   }
 });
 
+test("classifies Hebrew business meetings and excludes unrelated Hebrew appointments", () => {
+  const source = "https://example.test/צור-קשר";
+  const business = classify_meeting_candidate({
+    rawUrl: "/%D7%AA%D7%99%D7%90%D7%95%D7%9D-%D7%A4%D7%92%D7%99%D7%A9%D7%94",
+    attribute: "href",
+    label: "קבעו שיחת ייעוץ",
+    context: "דברו עם המכירות",
+    kind: "visible_link",
+    baseUrl: source,
+    sourcePageUrl: source,
+  });
+  assert.equal(
+    business?.url,
+    "https://example.test/%D7%AA%D7%99%D7%90%D7%95%D7%9D-%D7%A4%D7%92%D7%99%D7%A9%D7%94",
+  );
+
+  for (const rejected of [
+    ["/webinar", "הרשמה לוובינר", "כנס מקצועי"],
+    ["/careers", "תיאום ראיון עבודה", "דרושים"],
+    ["/clinic", "קביעת תור", "מרפאה ורופא"],
+    ["/restaurant", "הזמנת שולחן", "מסעדה"],
+  ] as const) {
+    assert.equal(classify_meeting_candidate({
+      rawUrl: rejected[0],
+      attribute: "href",
+      label: rejected[1],
+      context: rejected[2],
+      kind: "visible_link",
+      baseUrl: source,
+      sourcePageUrl: source,
+    }), undefined, rejected[1]);
+  }
+});
+
 test("deduplicates destinations and merges sorted source evidence", () => {
   const merged = merge_meeting_links([
     {

@@ -16,6 +16,7 @@ import type {
   ContactRequest,
   PopulatedField,
 } from "../../shared_files_forms/forms_types_(Support).js";
+import { matches_form_semantic } from "../../shared_files_forms/form_semantics_(Deterministic).js";
 import type {
   PageIntelligence,
   PageIntelligenceAction,
@@ -378,7 +379,7 @@ function unresolved_population_targets(
 
 function population_instruction(target: PopulationTarget): string {
   return [
-    `Locate the one visible editable control inside the selected contact form that requests the contact ${target.field}.`,
+    `Locate the one visible editable control inside the selected contact form that requests the contact ${target.field}. The visible interface may be in English, Hebrew, or a mixture of both languages.`,
     `Return one fill action whose only argument is exactly %${target.variable}%.`,
     "Do not return or repeat the variable value itself.",
     "Do not choose dropdown, radio, checkbox, consent, budget, legal, CAPTCHA, file, date, number, or any value other than the required placeholder.",
@@ -603,36 +604,37 @@ function has_conflicting_contact_semantics(
   state: { tag: string; type: string; metadata: string },
 ): boolean {
   const detected_fields = new Set<ContactPopulationField>();
-  if (state.type === "email" || /e-?mail/.test(state.metadata)) {
+  if (state.type === "email" || matches_form_semantic("email", state.metadata)) {
     detected_fields.add("email");
   }
-  if (state.type === "tel" || /phone|mobile|telephone/.test(state.metadata)) {
+  if (state.type === "tel" || matches_form_semantic("phone", state.metadata)) {
     detected_fields.add("phone");
   }
   if (
     state.tag === "textarea" ||
-    /message|comment|inquiry|enquiry|details|description/.test(state.metadata)
+    matches_form_semantic("message", state.metadata)
   ) {
     detected_fields.add("message");
   }
   if (
-    /(^|\s)(?:full[ _-]?)?(?:your[ _-]?)?name(\s|$)|first[ _-]?name|last[ _-]?name|surname/.test(
-      state.metadata,
-    ) &&
-    !/user[ _-]?name|company|business|organi[sz]ation/.test(state.metadata)
+    (matches_form_semantic("fullName", state.metadata) ||
+      matches_form_semantic("firstName", state.metadata) ||
+      matches_form_semantic("lastName", state.metadata)) &&
+    !/user[ _-]?name|שם משתמש/u.test(state.metadata) &&
+    !matches_form_semantic("company", state.metadata)
   ) {
     detected_fields.add("name");
   }
-  if (/company|business[ _-]?name|organi[sz]ation|employer/.test(state.metadata)) {
+  if (matches_form_semantic("company", state.metadata)) {
     detected_fields.add("company");
   }
-  if (/job[ _-]?title|job[ _-]?role|position|designation|occupation|(^|\s)role(\s|$)/.test(state.metadata)) {
+  if (matches_form_semantic("role", state.metadata)) {
     detected_fields.add("role");
   }
-  if (state.type === "url" || /web[ _-]?site|company[ _-]?url|business[ _-]?url|domain/.test(state.metadata)) {
+  if (state.type === "url" || matches_form_semantic("website", state.metadata)) {
     detected_fields.add("website");
   }
-  if (/country|nation|country[ _-]?region/.test(state.metadata)) {
+  if (matches_form_semantic("country", state.metadata)) {
     detected_fields.add("country");
   }
 
@@ -771,25 +773,25 @@ function blocking_reason_fields(
 ): ContactPopulationField[] {
   const normalized = blocking_reason.toLowerCase();
   const fields: ContactPopulationField[] = [];
-  if (/message|comment|inquiry|enquiry/.test(normalized)) fields.push("message");
-  if (/e-?mail/.test(normalized)) fields.push("email");
-  if (/phone|mobile|telephone/.test(normalized)) fields.push("phone");
+  if (matches_form_semantic("message", normalized)) fields.push("message");
+  if (matches_form_semantic("email", normalized)) fields.push("email");
+  if (matches_form_semantic("phone", normalized)) fields.push("phone");
   if (
-    /name/.test(normalized) &&
-    !/company|business|organi[sz]ation|employer/.test(normalized)
+    matches_form_semantic("fullName", normalized) &&
+    !matches_form_semantic("company", normalized)
   ) {
     fields.push("name");
   }
-  if (/company|business|organi[sz]ation|employer/.test(normalized)) {
+  if (matches_form_semantic("company", normalized)) {
     fields.push("company");
   }
-  if (/job[ _-]?title|job[ _-]?role|position|designation|occupation/.test(normalized)) {
+  if (matches_form_semantic("role", normalized)) {
     fields.push("role");
   }
-  if (/website|web[ _-]?site|domain|company[ _-]?url/.test(normalized)) {
+  if (matches_form_semantic("website", normalized)) {
     fields.push("website");
   }
-  if (/country|nation/.test(normalized)) fields.push("country");
+  if (matches_form_semantic("country", normalized)) fields.push("country");
   return fields.length > 0 ? fields : ["message"];
 }
 

@@ -12,7 +12,7 @@ import type {
 import type { MessageCandidateDebugInfo } from "./C2_submission_types_(Support).js";
 
 const CONFIRMATION_CLASSIFICATION_INSTRUCTION =
-  "Classify whether a newly visible status, alert, notification, or message explicitly confirms that the contact form was submitted, sent, or received. Generic thanks, calls to action, validation messages, pending states, and unrelated page text are not success. Return the exact visible evidence text verbatim and use high confidence only for unambiguous confirmation.";
+  "Classify whether a newly visible status, alert, notification, or message explicitly confirms that the contact form was submitted, sent, or received. The visible interface may be in English, Hebrew, or a mixture of both languages. Generic thanks, calls to action, validation messages, pending states, and unrelated page text are not success. Return the exact visible evidence text verbatim and use high confidence only for unambiguous confirmation.";
 
 const confirmation_schema = z.object({
   isExplicitSuccess: z.boolean(),

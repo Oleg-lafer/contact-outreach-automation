@@ -123,7 +123,7 @@ export async function assess_required_control_inventory(
     elements: Array<SVGElement | HTMLElement>,
   ): RequiredControlAssessment[] => {
       const placeholder_pattern =
-        /^(-+|choose(?:\s+.*)?|select(?:\s+.*)?|please\s+(?:choose|select)(?:\s+.*)?|pick one|topic)$/i;
+        /^(-+|choose(?:\s+.*)?|select(?:\s+.*)?|please\s+(?:choose|select)(?:\s+.*)?|pick one|topic|בחר(?:ו)?(?:\s+.*)?|נא לבחור(?:\s+.*)?|יש לבחור(?:\s+.*)?|בחירה)$/iu;
       function is_rendered(element: Element): boolean {
         if (!(element instanceof HTMLElement) || !element.isConnected) {
           return false;
