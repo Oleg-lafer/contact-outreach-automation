@@ -10,7 +10,7 @@ import type {
   PageObstructionAction,
 } from "../../shared_files_forms/forms_types_(Support).js";
 import type { DeepDebugContext } from "../../shared_files_forms/deep_debug_types_(Support).js";
-import { dismiss_cookie_obstructions } from "../../../../shared_files_orchestrator/page_obstructions_(Deterministic).js";
+import { dismiss_page_obstructions } from "../../../../shared_files_orchestrator/page_obstructions_(Deterministic).js";
 import { normalize_bilingual_text } from "../../../../shared_files_orchestrator/bilingual_text_(Deterministic).js";
 import type {
   SubmitCandidateDebugInfo,
@@ -78,14 +78,14 @@ export async function prepare_submit_control(
 }> {
   const page = candidate.frame.page();
   const obstruction_actions: PageObstructionAction[] = [];
-  let remaining_cookie_actions = 3;
-  const initial_obstructions = await dismiss_cookie_obstructions(
+  let remaining_obstruction_actions = 3;
+  const initial_obstructions = await dismiss_page_obstructions(
     page,
     undefined,
-    remaining_cookie_actions,
+    remaining_obstruction_actions,
   );
   obstruction_actions.push(...initial_obstructions);
-  remaining_cookie_actions -= initial_obstructions.length;
+  remaining_obstruction_actions -= initial_obstructions.length;
 
   let result: SubmitControlSearchResult = {
     reason: "no enabled submit control was found",
@@ -116,16 +116,16 @@ export async function prepare_submit_control(
     await page.waitForTimeout(SUBMIT_LAYOUT_SETTLE_MS).catch(() => undefined);
 
     const targeted_obstructions =
-      remaining_cookie_actions > 0
-        ? await dismiss_cookie_obstructions(
+      remaining_obstruction_actions > 0
+        ? await dismiss_page_obstructions(
             page,
             result.control,
-            remaining_cookie_actions,
+            remaining_obstruction_actions,
           )
         : [];
     if (targeted_obstructions.length > 0) {
       obstruction_actions.push(...targeted_obstructions);
-      remaining_cookie_actions -= targeted_obstructions.length;
+      remaining_obstruction_actions -= targeted_obstructions.length;
       deep_debug?.record({
         stage: "submission",
         substage: "preflight",
@@ -136,7 +136,7 @@ export async function prepare_submit_control(
         correlationId: `preflight-${attempt + 1}`,
         data: {
           actions: targeted_obstructions,
-          remainingCookieActions: remaining_cookie_actions,
+          remainingObstructionActions: remaining_obstruction_actions,
         },
       });
       continue;
@@ -172,16 +172,16 @@ export async function prepare_submit_control(
     // interceptor is terminal unless cookie handling can remove it.
     if (actionability.receiver) {
       const recovered_obstructions =
-        remaining_cookie_actions > 0
-          ? await dismiss_cookie_obstructions(
+        remaining_obstruction_actions > 0
+          ? await dismiss_page_obstructions(
               page,
               result.control,
-              remaining_cookie_actions,
+              remaining_obstruction_actions,
             )
           : [];
       if (recovered_obstructions.length > 0) {
         obstruction_actions.push(...recovered_obstructions);
-        remaining_cookie_actions -= recovered_obstructions.length;
+        remaining_obstruction_actions -= recovered_obstructions.length;
         continue;
       }
       return {

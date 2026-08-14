@@ -317,16 +317,21 @@ test("deep-debug recorder and workflow artifacts", async (context) => {
       "/round3-contradictory",
       "round3-contradictory",
     );
-    assert.equal(contradictory.status, "INCONCLUSIVE", JSON.stringify(contradictory));
+    assert.equal(contradictory.status, "FAILED", JSON.stringify(contradictory));
     assert.equal(
       contradictory.failureKind,
-      "submission.inconclusive",
+      "submission.contradictory",
     );
     assert.equal(
       contradictory.submissionDebug?.postClickDisposition,
       "contradictory",
     );
     assert.equal(contradictory.submissionDebug?.confirmationEvidence, "network");
+    assert.equal(contradictory.signalEvaluation?.evaluated, true);
+    if (contradictory.signalEvaluation?.evaluated) {
+      assert.equal(contradictory.signalEvaluation.hasPositiveSignals, true);
+      assert.equal(contradictory.signalEvaluation.hasNegativeSignals, true);
+    }
 
     for (const outcome of [rejected, contradictory]) {
       const artifacts = await read_text_artifacts(
@@ -432,7 +437,7 @@ function page_for_path(path: string): string {
                  method: 'POST',
                  body: new FormData(form),
                }).then(() => {
-                 status.textContent = 'Please complete this required field.';
+                 status.textContent = 'שליחת ההודעה נכשלה.';
                });`
         : path === "/reset-without-evidence"
           ? "form.reset();"

@@ -506,7 +506,7 @@ function classify_rejection_text(
     }
   | undefined {
   if (
-    /(?:captcha|recaptcha|hcaptcha|turnstile|not a robot|verify that you are not a robot).*(?:required|complete|verify|before submitting)|(?:required|complete|verify).*(?:captcha|recaptcha|hcaptcha|turnstile|robot)|(?:אימות|קאפצ['׳]?ה|רובוט).*(?:חובה|נדרש|יש להשלים|יש לאמת)|(?:יש להשלים|יש לאמת).*(?:אימות|רובוט)/u.test(
+    /(?:captcha|recaptcha|hcaptcha|turnstile|not a robot|verify that you are not a robot).*(?:required|complete|verify|before submitting)|(?:required|complete|verify).*(?:captcha|recaptcha|hcaptcha|turnstile|robot)|(?:אימות|קאפצ['׳]?ה|רובוט).*(?:חובה|נדרש|יש להשלים|יש לאמת)|(?:יש להשלים|יש לאמת).*(?:אימות|רובוט)|(?:נא )?אשרו? שאתם לא רובוט/u.test(
       normalized,
     )
   ) {
@@ -529,7 +529,7 @@ function classify_rejection_text(
     return { category: "validation", patternId: "post-submit-validation" };
   }
   if (
-    /please try again|unable to (?:send|submit)|could not (?:send|submit)|submission failed|message was not sent|an error occurred|^error(?:\s|:)|אירעה שגיאה|ארעה שגיאה|לא ניתן לשלוח|השליחה נכשלה|ההודעה לא נשלחה|נסה שוב|נסו שוב/u.test(
+    /please try again|unable to (?:send|submit)|could not (?:send|submit)|submission failed|message was not sent|an error occurred|^error(?:\s|:)|אירעה שגיאה|ארעה שגיאה|לא ניתן לשלוח|(?:ה|שליחת ה)הודעה נכשלה|השליחה נכשלה|ההודעה לא נשלחה|הייתה בעיה בשליחה|נסה שוב|נסו שוב/u.test(
       normalized,
     )
   ) {

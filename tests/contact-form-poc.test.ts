@@ -273,6 +273,14 @@ test("contact-form workflow scenarios", async (context) => {
     assert.equal(outcome.messageDisposition, "populated");
   });
 
+  await context.test("advances Hebrew progression controls and submits once", async () => {
+    const outcome = await run_for_path("/multi-step-hebrew");
+    assert.equal(outcome.status, "SUCCESS", JSON.stringify(outcome));
+    assert.equal(outcome.messageDisposition, "populated");
+    assert.equal(outcome.submissionAttempted, true);
+    assert.equal(outcome.submissionConfirmed, true);
+  });
+
   await context.test("stops when a third progression step would be required", async () => {
     const outcome = await run_for_path("/multi-step-three");
 
@@ -462,6 +470,31 @@ test("contact-form workflow scenarios", async (context) => {
     assert.equal(outcome.status, "SUCCESS", JSON.stringify(outcome));
     assert.equal(outcome.submissionAttempted, true);
     assert.equal(outcome.submissionConfirmed, true);
+  });
+
+  await context.test("dismisses verified Hebrew cookie and newsletter overlays before one submit", async () => {
+    for (const path of ["/hebrew-cookie-overlay", "/hebrew-newsletter-overlay"]) {
+      const outcome = await run_for_path(path);
+      assert.equal(outcome.status, "SUCCESS", `${path}: ${JSON.stringify(outcome)}`);
+      assert.equal(outcome.submissionAttempted, true, path);
+      assert.equal(outcome.submissionConfirmed, true, path);
+    }
+  });
+
+  await context.test("reports Hebrew CAPTCHA rejection after exactly one submit", async () => {
+    const outcome = await run_for_path("/hebrew-captcha-blocked");
+    assert.equal(outcome.status, "FAILED", JSON.stringify(outcome));
+    assert.equal(outcome.failureKind, "submission.captcha");
+    assert.equal(outcome.submissionAttempted, true);
+  });
+
+  await context.test("keeps Hebrew rejection plus correlated HTTP success contradictory", async () => {
+    const outcome = await run_for_path("/hebrew-network-contradiction");
+    assert.equal(outcome.status, "FAILED", JSON.stringify(outcome));
+    assert.equal(outcome.failureKind, "submission.contradictory");
+    assert.equal(outcome.postClickDisposition, "contradictory");
+    assert.equal(outcome.submissionConfirmed, false);
+    assert.equal(outcome.submissionAttempted, true);
   });
 
   await context.test("selects hidden native dropdowns through visible styled companions", async () => {
@@ -1925,6 +1958,8 @@ function page_for_path(path: string): string {
       return html(multi_step_contact_form(1));
     case "/multi-step-two":
       return html(multi_step_contact_form(2));
+    case "/multi-step-hebrew":
+      return html(multi_step_contact_form(2, true));
     case "/multi-step-three":
       return html(multi_step_contact_form(3));
     case "/default-submit-next":
@@ -2497,6 +2532,40 @@ function page_for_path(path: string): string {
           document.querySelector('#accept-cookies').onclick = () => document.querySelector('#cookie-consent').remove();
           document.querySelector('form').onsubmit = (event) => { event.preventDefault(); document.querySelector('#result').textContent = 'Your message has been sent.'; };
         </script>`);
+    case "/hebrew-cookie-overlay":
+      return html(`
+        <form><h1>צרו קשר</h1><input type="email" name="email"><textarea name="message"></textarea><button>שליחה</button></form>
+        <div id="result" role="status"></div>
+        <div id="cookie-consent" role="dialog" aria-modal="true" style="position:fixed;inset:0;z-index:9999;background:white">
+          <p>קובצי Cookies אנחנו מעוניינים להשתמש בקובצי Cookies כדי לשפר את חווית השימוש שלך</p>
+          <button id="accept-cookies" type="button">אישור הכול</button>
+          <button id="reject-cookies" type="button">דחה</button>
+        </div>
+        <script>
+          document.querySelector('#reject-cookies').onclick = () => document.querySelector('#cookie-consent').remove();
+          document.querySelector('#accept-cookies').onclick = () => document.querySelector('#cookie-consent').remove();
+          document.querySelector('form').onsubmit = (event) => { event.preventDefault(); document.querySelector('#result').textContent = 'פנייתך התקבלה'; };
+        </script>`);
+    case "/hebrew-newsletter-overlay":
+      return html(`
+        <form><h1>צרו קשר</h1><input type="email" name="email"><textarea name="message"></textarea><button>שליחה</button></form>
+        <div id="result" role="status"></div>
+        <div id="newsletter" role="dialog" aria-modal="true" style="position:fixed;inset:0;z-index:9999;background:white">
+          <p>10% הנחה בקנייה ראשונה באתר. הצטרפו לניוזלטר שלנו.</p>
+          <input id="promo-email"><button type="button">הצטרפו</button>
+          <button type="button" aria-label="סגור" onclick="this.parentElement.remove()">×</button>
+        </div>
+        <script>document.querySelector('form').onsubmit = (event) => { event.preventDefault(); document.querySelector('#result').textContent = 'פנייתך התקבלה'; };</script>`);
+    case "/hebrew-captcha-blocked":
+      return html(`
+        <form><h1>צרו קשר</h1><input type="email" name="email"><textarea name="message"></textarea><div class="g-recaptcha" style="width:20px;height:20px"></div><button>שליחה</button></form>
+        <div id="result"></div>
+        <script>document.querySelector('form').onsubmit = (event) => { event.preventDefault(); document.querySelector('#result').innerHTML = '<div role="alert">נא אשרו שאתם לא רובוט</div>'; };</script>`);
+    case "/hebrew-network-contradiction":
+      return html(`
+        <form><h1>צרו קשר</h1><input type="email" name="email"><textarea name="message"></textarea><button>שליחה</button></form>
+        <div id="result" role="alert"></div>
+        <script>document.querySelector('form').onsubmit = (event) => { event.preventDefault(); fetch('/api/contact-no-ui', { method: 'POST', body: new FormData(event.currentTarget) }).then(() => { document.querySelector('#result').textContent = 'שליחת ההודעה נכשלה.'; }); };</script>`);
     case "/round3-onetrust-overlay":
       return html(`
         <form><h1>Contact us</h1><input type="email" name="email"><textarea name="message"></textarea><button>Send</button></form>
@@ -2626,25 +2695,25 @@ function page_for_path(path: string): string {
   }
 }
 
-function multi_step_contact_form(progression_steps: number): string {
+function multi_step_contact_form(progression_steps: number, hebrew = false): string {
   const steps = Array.from({ length: progression_steps }, (_, index) => {
     const field = index === 0
       ? '<label>Email <input type="email" name="email"></label>'
       : index === 1
         ? '<label>Name <input name="name"></label>'
         : `<label>Company <input name="company-${index}"></label>`;
-    const label = index === 0 ? "Next" : "Continue";
+    const label = hebrew ? (index === 0 ? "הבא" : "המשך") : (index === 0 ? "Next" : "Continue");
     return `<section data-step="${index}"${index === 0 ? "" : " hidden"}>${field}<button type="button" data-progress>${label}</button></section>`;
   }).join("");
   const final_step = `
     <section data-step="${progression_steps}" hidden>
-      <label>Message <textarea name="message"></textarea></label>
-      <button type="submit">Send</button>
+      <label>${hebrew ? "הודעה" : "Message"} <textarea name="message"></textarea></label>
+      <button type="submit">${hebrew ? "שליחה" : "Send"}</button>
     </section>`;
 
   return `
     <form>
-      <h1>Contact our project team</h1>
+      <h1>${hebrew ? "צרו קשר עם צוות הפרויקט" : "Contact our project team"}</h1>
       ${steps}
       ${final_step}
     </form>

@@ -255,14 +255,14 @@ export interface OutreachBrowserSession {
 }
 
 export interface PageObstructionAction {
-  kind: "cookieConsent";
+  kind: "cookieConsent" | "promotionalModal";
   action: "reject" | "necessaryOnly" | "close" | "accept";
   label: string;
   result: "clicked" | "failed";
   reason?: string;
   vendor?: CookieConsentVendor;
   attempt?: number;
-  detectionBasis?: "knownVendor" | "consentText";
+  detectionBasis?: "knownVendor" | "consentText" | "promotionalText";
   blockingVerified?: boolean;
   cleared?: boolean;
   verificationReason?: string;
