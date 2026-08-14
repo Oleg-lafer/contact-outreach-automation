@@ -47,7 +47,25 @@ Add arguments:
 ```
 
 Task Scheduler needs no campaign-specific arguments. The script reads the JSON
-file and writes its console transcript under `output\scheduled-logs\`.
+file and writes each run under its own directory in `output\scheduled-logs\`.
+The directory name includes the campaign, mode, UTC start time, and a unique
+run ID. It contains npm standard output in `run.log`, npm standard error in
+`errors.log`, wrapper events in `runner.log`, immutable `metadata.json`, and a
+heartbeat-driven `status.json`. The final subprocess result is stored in
+`exit-code.txt`. `output\scheduled-logs\latest-run.json` points to the most
+recently started execution.
+
+Monitor the current or most recent run live with:
+
+```powershell
+powershell -NoProfile -File .\operations\monitor-scheduled-run.ps1
+```
+
+Inspect it once without following new log output with:
+
+```powershell
+powershell -NoProfile -File .\operations\monitor-scheduled-run.ps1 -NoFollow
+```
 
 ## Output and state
 
