@@ -4,11 +4,13 @@ import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
+import type { Page } from "playwright";
 import {
   resolve_cli_options,
   run_contact_outreach_workflow,
 } from "../src/contact_outreach_workflow/contact_outreach_orchestrator.js";
 import { create_deep_debug_context } from "../src/contact_outreach_workflow/contact_channels/forms/shared_files_forms/deep_debug_observability_(Support).js";
+import { discover_contact_routes } from "../src/contact_outreach_workflow/orchestrator/C_contact_routes/C1_contact_route_discovery_(Integration).js";
 
 const CONTACT_VALUES = {
   name: "Deep Debug Person",
@@ -116,8 +118,36 @@ test("deep-debug recorder and workflow artifacts", async (context) => {
     assert.match(timeline, /activate-submit-control/);
     assert.match(timeline, /dom-event/);
     assert.match(timeline, /submission-assessment-completed/);
+    assert.match(timeline, /"operation":"scan-contact-links","outcome":"started"/);
+    assert.match(timeline, /"operation":"scan-contact-links","outcome":"succeeded"/);
+    assert.match(timeline, /"operation":"scan-frame-links","outcome":"succeeded"/);
     assert_chronological(timeline);
     assert_no_contact_values(await read_text_artifacts(outcome.deepDebug.artifactDirectory));
+  });
+
+  await context.test("finalizes focused contact-route timeout evidence", async () => {
+    const recorder = await create_deep_debug_context({
+      outputPath: join(temporary_directory, "route-timeout", "result.txt"),
+      targetUrl: "https://hung.example.test/",
+      engine: "playwright",
+      redactionValues: [],
+    });
+    const frame = {
+      url: () => "https://hung.example.test/frame",
+      locator: () => ({ evaluateAll: () => new Promise<never>(() => undefined) }),
+    };
+    const page = {
+      url: () => "https://hung.example.test/",
+      frames: () => [frame],
+    } as unknown as Page;
+
+    await assert.rejects(discover_contact_routes(page, { timeoutMs: 25, deepDebug: recorder }));
+    const summary = await recorder.finalize({ failure: "Contact-link scanning timed out after 25 ms." });
+    const timeline = await readFile(summary.timelinePath, "utf8");
+    assert.match(timeline, /"operation":"scan-contact-links","outcome":"failed"/);
+    assert.match(timeline, /"frameUrl":"https:\/\/hung\.example\.test\/frame"/);
+    assert.match(timeline, /"timeoutMs":25/);
+    assert.match(timeline, /"completedFrames":0/);
   });
 
   await context.test("captures native validation blockage before submit activation", async () => {

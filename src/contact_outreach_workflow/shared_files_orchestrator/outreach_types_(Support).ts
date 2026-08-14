@@ -29,7 +29,7 @@ export type AutomationFailureKind =
 
 export type AutomationRunMode = "production" | "deep-debug";
 export type AutomationEngine = "playwright" | "stagehand";
-export type WorkflowExecutionStatus = "FINISHED" | "RUN_FAILED" | "SKIPPED";
+export type WorkflowExecutionStatus = "FINISHED" | "RUN_FAILED" | "SKIPPED" | "TIMED_OUT";
 export type WebsiteRunStatus = "pending" | "succeeded" | "failed";
 
 export type DiscoveryAssessment =

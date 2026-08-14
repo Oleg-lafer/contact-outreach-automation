@@ -213,6 +213,13 @@ test("database claim eligibility separates new work from explicit retries", () =
     ),
     false,
   );
+  assert.equal(
+    claim_is_still_eligible(
+      [{ execution_status: "timed_out", forms_result: null }],
+      "retry-unsuccessful",
+    ),
+    false,
+  );
 });
 
 test("campaign synchronization deduplicates domains and preserves success", () => {
@@ -391,6 +398,53 @@ test("database campaign continues after an ordinary website failure", async () =
   );
 });
 
+test("database campaign reports contact-route timeouts separately and continues", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "outreach-database-timeout-"));
+  const campaign = campaign_from_database_row({
+    campaign_id: 1, campaign_name: "Timeout fixture",
+    sender_details: { name: "Sender", email: "sender@example.test", phone: "+1000", company: "Company", role: "Role", website: "example.test", country: "USA" },
+    message_to_send: "Message", prevent_resend: true,
+  });
+  const candidates = [
+    { websiteId: 20, websiteUrl: "https://hung.example.test/" },
+    { websiteId: 21, websiteUrl: "https://next.example.test/" },
+  ];
+  const completed: string[] = [];
+  const repository: DatabaseCampaignRepository = {
+    loadCampaign: async () => campaign,
+    snapshotCandidates: async () => candidates,
+    claimWebsite: async (_campaign, websiteId) => ({ action: "run", attemptId: websiteId + 100, website: candidates.find((candidate) => candidate.websiteId === websiteId)! }),
+    completeAttempt: async (_attemptId, outcome) => { completed.push(outcome.executionStatus); },
+    recoverStaleAttempts: async () => 0,
+    close: async () => undefined,
+  };
+  let calls = 0;
+  const summary = await run_database_campaign(
+    { campaignId: 1, runMode: "deep-debug", retryUnsuccessful: false, preview: false, confirmed: true, outputRoot: directory },
+    {
+      repository,
+      runCore: async (request) => {
+        calls++;
+        const forms = create_form_failure_outcome(request.websiteUrl, calls === 1 ? "Contact-link scanning timed out after 10000 ms." : "Fixture failure", "runtime.error");
+        return create_contact_outreach_outcome(
+          forms,
+          create_email_failure_outcome(request.websiteUrl, forms.reason ?? "Fixture failure"),
+          create_meeting_failure_outcome(request.websiteUrl, forms.reason ?? "Fixture failure"),
+          calls === 1 ? "TIMED_OUT" : "RUN_FAILED",
+        );
+      },
+      engine: "playwright", now: () => new Date("2026-01-01T00:00:00Z"),
+    },
+  );
+
+  assert.equal(calls, 2);
+  assert.deepEqual(completed, ["TIMED_OUT", "RUN_FAILED"]);
+  assert.equal(summary.processed, 2);
+  assert.equal(summary.timedOut, 1);
+  assert.equal(summary.failed, 1);
+  assert.equal(summary.skipped, 0);
+});
+
 test("migration contains the agreed minimal tables, keys, and indexes", async () => {
   const sql = await readFile(
     "database/migrations/001_create_outreach_tables.sql",
@@ -411,6 +465,7 @@ test("migration contains the agreed minimal tables, keys, and indexes", async ()
   assert.match(sql, /`meeting_discovery_result`/);
   assert.match(sql, /'finished'/);
   assert.match(sql, /'run_failed'/);
+  assert.match(sql, /'timed_out'/);
   assert.doesNotMatch(sql, /'succeeded'/);
   assert.doesNotMatch(sql, /WORKER_|resend_cooldown|available_time/);
 
@@ -447,6 +502,13 @@ test("migration contains the agreed minimal tables, keys, and indexes", async ()
   assert.match(ownershipSql, /DROP COLUMN `campaign_id`/);
   assert.match(ownershipSql, /idx_outreach_attempt_resend_lookup` \(`website_id`, `forms_result`\)/);
   assert.doesNotMatch(ownershipSql, /junction|JSON_ARRAY/);
+
+  const timeoutSql = await readFile(
+    "database/migrations/005_add_timed_out_execution_status.sql",
+    "utf8",
+  );
+  assert.match(timeoutSql, /'timed_out'/);
+  assert.match(timeoutSql, /DROP CHECK `chk_outreach_attempt_completed_time`/);
 });
 
 test("migration runner distinguishes legacy, final, and partial schemas", () => {

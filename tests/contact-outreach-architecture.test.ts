@@ -100,6 +100,14 @@ test("aggregate outreach outcome requires independent channel outcomes and mirro
     emailDiscoveryResult: null,
     meetingDiscoveryResult: null,
   });
+  const timedOut = create_contact_outreach_outcome(forms, emails, meetings, "TIMED_OUT");
+  assert.deepEqual(outreach_attempt_completion_from_outcome(timedOut), {
+    executionStatus: "timed_out",
+    formsResult: null,
+    emailDiscoveryResult: null,
+    meetingDiscoveryResult: null,
+  });
+  assert.match(format_contact_outreach_outcome(timedOut), /Execution status: TIMED_OUT/);
 });
 
 test("npm workflow commands target only the outreach entry point", async () => {

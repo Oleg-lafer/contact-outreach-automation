@@ -3,7 +3,7 @@ import { create_email_failure_outcome } from "../contact_channels/emails/pipelin
 import { create_meeting_failure_outcome } from "../contact_channels/meetings/pipeline/C_reporting/C1_meeting_reporting_(Support).js";
 import { create_blocked_discovery_outcome } from "../contact_channels/forms/pipeline/A_discovery/A4_discovery_evidence_(Deterministic).js";
 import { open_target_website } from "./B_browser/B_browser_session_(Integration).js";
-import { discover_contact_routes } from "./C_contact_routes/C1_contact_route_discovery_(Integration).js";
+import { ContactRouteScanTimeoutError, discover_contact_routes } from "./C_contact_routes/C1_contact_route_discovery_(Integration).js";
 import { run_contact_channels } from "./D_contact_channel_coordination/D_contact_channel_coordination_(Integration).js";
 import { create_contact_outreach_outcome } from "./E_aggregate_reporting/E_aggregate_reporting_(Support).js";
 import { describe_error } from "../shared_files_orchestrator/outreach_errors_(Support).js";
@@ -58,7 +58,9 @@ export async function run_contact_outreach_core(
         redactionValues: contact_request_redaction_values(contact_request),
       },
     });
-    const contact_routes = await discover_contact_routes(browser_session.page);
+    const contact_routes = await discover_contact_routes(browser_session.page, {
+      ...(deep_debug ? { deepDebug: deep_debug } : {}),
+    });
     const channels = await run_contact_channels({
       contactRequest: contact_request,
       browserSession: browser_session,
@@ -92,7 +94,7 @@ export async function run_contact_outreach_core(
       ),
       create_email_failure_outcome(contact_request.websiteUrl, reason),
       create_meeting_failure_outcome(contact_request.websiteUrl, reason),
-      "RUN_FAILED",
+      error instanceof ContactRouteScanTimeoutError ? "TIMED_OUT" : "RUN_FAILED",
     );
     const browser_error = find_browser_stage_error(error);
     if (browser_error) outcome.browserStage = browser_error.browserStage;

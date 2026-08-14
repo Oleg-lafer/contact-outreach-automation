@@ -17,7 +17,7 @@ export interface OutreachCampaign {
   preventResend: boolean;
 }
 
-export type OutreachExecutionStatus = "finished" | "run_failed" | "skipped";
+export type OutreachExecutionStatus = "finished" | "run_failed" | "skipped" | "timed_out";
 export type OutreachChannelResult =
   | "success"
   | "partial"

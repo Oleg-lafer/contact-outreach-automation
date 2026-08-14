@@ -92,7 +92,7 @@ try {
   assert.equal(campaignColumns.get("message_to_send"), "text");
   assert.equal(
     attemptColumns.get("execution_status"),
-    "enum('queued','running','finished','run_failed','skipped')",
+    "enum('queued','running','finished','run_failed','skipped','timed_out')",
   );
   for (const resultColumn of [
     "forms_result",

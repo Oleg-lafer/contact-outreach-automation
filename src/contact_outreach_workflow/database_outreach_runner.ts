@@ -49,6 +49,7 @@ export interface DatabaseRunSummary {
   succeeded: number;
   partial: number;
   failed: number;
+  timedOut: number;
   skipped: number;
   unavailable: number;
   staleAttemptsRecovered: number;
@@ -87,6 +88,7 @@ export async function run_database_campaign(
     succeeded: 0,
     partial: 0,
     failed: 0,
+    timedOut: 0,
     skipped: 0,
     unavailable: 0,
     staleAttemptsRecovered,
@@ -154,7 +156,8 @@ export async function run_database_campaign(
         browser_outcomes.push(outcome);
         await repository.completeAttempt(claim.attemptId, outcome);
         summary.processed++;
-        if (outcome.status === "SUCCESS") summary.succeeded++;
+        if (outcome.executionStatus === "TIMED_OUT") summary.timedOut++;
+        else if (outcome.status === "SUCCESS") summary.succeeded++;
         else if (outcome.status === "PARTIAL" || outcome.status === "INCONCLUSIVE") {
           summary.partial++;
         } else summary.failed++;

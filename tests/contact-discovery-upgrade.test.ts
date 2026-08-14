@@ -5,7 +5,8 @@ import { join } from "node:path";
 import test from "node:test";
 import { chromium, type Browser, type Page } from "playwright";
 import type { ContactRequest } from "../src/contact_outreach_workflow/contact_channels/forms/shared_files_forms/forms_types_(Support).js";
-import { discover_contact_routes } from "../src/contact_outreach_workflow/orchestrator/C_contact_routes/C1_contact_route_discovery_(Integration).js";
+import { ContactRouteScanTimeoutError, discover_contact_routes } from "../src/contact_outreach_workflow/orchestrator/C_contact_routes/C1_contact_route_discovery_(Integration).js";
+import type { DeepDebugContext, DeepDebugEventInput } from "../src/contact_outreach_workflow/shared_files_orchestrator/deep_debug_types_(Support).js";
 import { score_contact_route } from "../src/contact_outreach_workflow/orchestrator/C_contact_routes/C2_contact_route_scoring_(Deterministic).js";
 import { discover_contact_form } from "../src/contact_outreach_workflow/contact_channels/forms/pipeline/A_discovery/A1_contact_form_discovery_(Integration).js";
 import { populate_contact_form } from "../src/contact_outreach_workflow/contact_channels/forms/pipeline/B_population/B1_contact_form_population_(Integration).js";
@@ -82,6 +83,35 @@ test("macro route discovery decodes and ranks Hebrew URL paths", async () => {
       );
     },
   );
+});
+
+test("macro route discovery times out a hung frame and records focused diagnostics", async () => {
+  const events: DeepDebugEventInput[] = [];
+  const frame = {
+    url: () => "https://hung.example.test/frame",
+    locator: () => ({ evaluateAll: () => new Promise<never>(() => undefined) }),
+  };
+  const page = {
+    url: () => "https://hung.example.test/",
+    frames: () => [frame],
+  } as unknown as Page;
+  const deepDebug = { record: (event: DeepDebugEventInput) => events.push(event) } as unknown as DeepDebugContext;
+  const started = Date.now();
+
+  await assert.rejects(
+    discover_contact_routes(page, { timeoutMs: 30, deepDebug }),
+    (error: unknown) => {
+      assert.ok(error instanceof ContactRouteScanTimeoutError);
+      assert.equal(error.activeFrameUrl, "https://hung.example.test/frame");
+      assert.equal(error.completedFrames, 0);
+      return true;
+    },
+  );
+
+  assert.ok(Date.now() - started < 500);
+  const timeoutEvent = events.find((event) => event.operation === "scan-contact-links" && event.outcome === "failed");
+  assert.equal(timeoutEvent?.frameUrl, "https://hung.example.test/frame");
+  assert.deepEqual(timeoutEvent?.data, { timeoutMs: 30, completedFrames: 0, discoveredLinks: 0 });
 });
 
 test("Hebrew form semantics populate supplied values verbatim and accept only required privacy consent", async () => {
