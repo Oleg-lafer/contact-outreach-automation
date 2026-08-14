@@ -522,6 +522,20 @@ function classify_rejection_text(
     return { category: "validation", patternId: "numeric-value-required" };
   }
   if (
+    /high spam risk network|try again without vpn|anti-spam by cleantalk|forbidden.*(?:spam|vpn|anti-spam)/.test(
+      normalized,
+    )
+  ) {
+    return { category: "server", patternId: "anti-spam-server-rejection" };
+  }
+  if (
+    /one or more fields? (?:has|have) an error|please check and try again|(?:קיימת|יש) שגיאה בשדה אחד או יותר|נא לבדוק ולנסות שוב/u.test(
+      normalized,
+    )
+  ) {
+    return { category: "validation", patternId: "form-fields-have-errors" };
+  }
+  if (
     /required|mandatory|obligatoire|requis|campo obligatorio|seleccione una opci[oó]n|please complete|need to be completed|must accept (?:the )?(?:privacy|terms)|privacy terms|found errors in form|ne peut pas [êe]tre vide|не може да бъде празно|задължително|plot[ëe]soni|verplicht|obrigat[oó]rio|שדה חובה|חובה למלא|נא למלא|אנא מלא|אנא מלאו|יש למלא|נדרש למלא|יש לבחור|נא לבחור|יש לאשר (?:את )?(?:מדיניות הפרטיות|התנאים)/u.test(
       normalized,
     )

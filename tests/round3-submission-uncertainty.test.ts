@@ -395,6 +395,32 @@ test("Round 3 classifies evidenced Hebrew rejection phrases and preserves contra
   }
 });
 
+test("Round 3 classifies evidenced bilingual validation and anti-spam phrases", () => {
+  const evidence = classify_new_submission_messages([
+    {
+      selector: '[role="alert"]',
+      frameUrl: "https://fixture.test/contact",
+      text: "קיימת שגיאה בשדה אחד או יותר. נא לבדוק ולנסות שוב.",
+    },
+    {
+      selector: ".validation-error",
+      frameUrl: "https://fixture.test/contact",
+      text: "One or more fields have an error. Please check and try again.",
+    },
+    {
+      selector: ".server-error",
+      frameUrl: "https://fixture.test/contact",
+      text: "Forbidden. Your IP belongs to a high spam risk network. Please, try again without VPN. Anti-Spam by CleanTalk.",
+    },
+  ]);
+  assert.deepEqual(evidence.map((item) => item.category), [
+    "validation",
+    "validation",
+    "server",
+  ]);
+  assert.equal(evidence[2]?.patternId, "anti-spam-server-rejection");
+});
+
 test("Round 3 classifies plural Hebrew robot verification as a CAPTCHA blocker", async () => {
   await with_page(async (page) => {
     const before = await assess_page_captcha(page);
