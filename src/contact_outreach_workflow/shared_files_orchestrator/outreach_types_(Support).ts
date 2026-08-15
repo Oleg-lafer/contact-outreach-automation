@@ -252,6 +252,27 @@ export interface OutreachBrowserSession {
   obstructionActions?: PageObstructionAction[];
   browserStage?: BrowserStageResult;
   deepDebug?: DeepDebugContext;
+  dialogController?: BrowserDialogController;
+}
+
+export interface BrowserDialogRecord {
+  sequence: number;
+  timestamp: string;
+  type: "alert" | "beforeunload" | "confirm" | "prompt";
+  message: string;
+  pageUrl: string;
+  phase: "browsing" | "submit";
+  action: "accept" | "dismiss";
+  result: "handled" | "failed";
+  error?: string;
+}
+
+export interface BrowserDialogController {
+  beginSubmit(): number;
+  endSubmit(): void;
+  recordsSince(sequence: number): BrowserDialogRecord[];
+  attach(page: Page): void;
+  detachAll(): void;
 }
 
 export interface PageObstructionAction {

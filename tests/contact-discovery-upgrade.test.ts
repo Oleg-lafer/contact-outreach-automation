@@ -7,6 +7,7 @@ import { chromium, type Browser, type Page } from "playwright";
 import type { ContactRequest } from "../src/contact_outreach_workflow/contact_channels/forms/shared_files_forms/forms_types_(Support).js";
 import { ContactRouteScanTimeoutError, discover_contact_routes } from "../src/contact_outreach_workflow/orchestrator/C_contact_routes/C1_contact_route_discovery_(Integration).js";
 import type { DeepDebugContext, DeepDebugEventInput } from "../src/contact_outreach_workflow/shared_files_orchestrator/deep_debug_types_(Support).js";
+import { run_contact_outreach_core } from "../src/contact_outreach_workflow/orchestrator/contact_outreach_core_(Integration).js";
 import { score_contact_route } from "../src/contact_outreach_workflow/orchestrator/C_contact_routes/C2_contact_route_scoring_(Deterministic).js";
 import { discover_contact_form } from "../src/contact_outreach_workflow/contact_channels/forms/pipeline/A_discovery/A1_contact_form_discovery_(Integration).js";
 import { populate_contact_form } from "../src/contact_outreach_workflow/contact_channels/forms/pipeline/B_population/B1_contact_form_population_(Integration).js";
@@ -112,6 +113,15 @@ test("macro route discovery times out a hung frame and records focused diagnosti
   const timeoutEvent = events.find((event) => event.operation === "scan-contact-links" && event.outcome === "failed");
   assert.equal(timeoutEvent?.frameUrl, "https://hung.example.test/frame");
   assert.deepEqual(timeoutEvent?.data, { timeoutMs: 30, completedFrames: 0, discoveredLinks: 0 });
+});
+
+test("full-site watchdog returns TIMED_OUT even before browser setup completes", async () => {
+  const outcome = await run_contact_outreach_core(
+    { ...CONTACT_REQUEST, websiteUrl: "http://127.0.0.1:9/" },
+    { runMode: "production", siteTimeoutMs: 1 },
+  );
+  assert.equal(outcome.executionStatus, "TIMED_OUT");
+  assert.match(outcome.reason ?? "", /Full website workflow timed out/);
 });
 
 test("Hebrew form semantics populate supplied values verbatim and accept only required privacy consent", async () => {

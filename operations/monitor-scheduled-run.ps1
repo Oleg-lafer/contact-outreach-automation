@@ -38,10 +38,17 @@ if (Test-Path -LiteralPath $statusPath) {
     $status = Get-Content -Raw -LiteralPath $statusPath | ConvertFrom-Json
     $heartbeat = [DateTimeOffset]::Parse([string]$status.heartbeatAtUtc)
     $heartbeatAgeSeconds = [Math]::Round(([DateTimeOffset]::UtcNow - $heartbeat).TotalSeconds)
-    $powershellAlive = $null -ne (Get-Process -Id $status.powershellProcessId -ErrorAction SilentlyContinue)
+    function Test-ProcessIdentity {
+        param([int]$ProcessId, [string]$ExpectedStartedAtUtc)
+        $process = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
+        if ($null -eq $process -or [string]::IsNullOrWhiteSpace($ExpectedStartedAtUtc)) { return $false }
+        $expected = [DateTimeOffset]::Parse($ExpectedStartedAtUtc).UtcDateTime
+        return [Math]::Abs(($process.StartTime.ToUniversalTime() - $expected).TotalSeconds) -lt 1
+    }
+    $powershellAlive = Test-ProcessIdentity -ProcessId $status.powershellProcessId -ExpectedStartedAtUtc ([string]$status.powershellStartedAtUtc)
     $launcherAlive = $false
     if ($null -ne $status.launcherProcessId) {
-        $launcherAlive = $null -ne (Get-Process -Id $status.launcherProcessId -ErrorAction SilentlyContinue)
+        $launcherAlive = Test-ProcessIdentity -ProcessId $status.launcherProcessId -ExpectedStartedAtUtc ([string]$status.launcherStartedAtUtc)
     }
     Write-Host "State: $($status.state) | Heartbeat age: ${heartbeatAgeSeconds}s | Runner alive: $powershellAlive | Launcher alive: $launcherAlive"
 }

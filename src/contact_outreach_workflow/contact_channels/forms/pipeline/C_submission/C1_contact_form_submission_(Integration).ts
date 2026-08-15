@@ -48,7 +48,9 @@ import {
   assess_effective_pre_submit_validity,
   click_confirmation_control_if_present,
   collect_invalid_controls,
+  classify_new_submission_messages,
   has_visible_success_message,
+  visible_success_message_matches,
   wait_for_submission_confirmation,
 } from "./C6_submission_confirmation_(Deterministic).js";
 import { analyze_network_submission_evidence } from "./C7_network_submission_evidence_(Deterministic).js";
@@ -845,10 +847,11 @@ async function submit_and_assess_contact_form_internal(
   }
 
   if (stagehand_proposal) {
+    const stagehand_dialog_sequence = browser_session.dialogController?.beginSubmit() ?? 0;
     const stagehand_result = await activate_stagehand_submission_proposal(
       stagehand_proposal,
       button_audit_events,
-    );
+    ).finally(() => browser_session.dialogController?.endSubmit());
     if (
       !stagehand_result.attempted ||
       !stagehand_result.submitControlResult?.control ||
@@ -893,6 +896,7 @@ async function submit_and_assess_contact_form_internal(
       captchaBeforeSubmission: captcha_before_submission,
       obstructionActions: browser_session.obstructionActions ?? [],
       preSubmitValidation: pre_submit_validation_evidence,
+      dialogSequence: stagehand_dialog_sequence,
     });
   }
 
@@ -936,12 +940,15 @@ async function submit_and_assess_contact_form_internal(
   });
 
   let click_error: string | undefined;
+  const dialog_sequence = browser_session.dialogController?.beginSubmit() ?? 0;
   try {
     await submit_control_result.control!.click({ timeout: ACTION_TIMEOUT_MS });
     mark_button_click_succeeded(submit_button_event);
   } catch (error) {
     click_error = describe_error(error);
     mark_button_click_failed(submit_button_event, click_error);
+  } finally {
+    browser_session.dialogController?.endSubmit();
   }
   deep_debug?.record({
     stage: "submission",
@@ -971,6 +978,7 @@ async function submit_and_assess_contact_form_internal(
     captchaBeforeSubmission: captcha_before_submission,
     obstructionActions: browser_session.obstructionActions ?? [],
     preSubmitValidation: pre_submit_validation_evidence,
+    dialogSequence: dialog_sequence,
   });
 }
 
@@ -1274,6 +1282,7 @@ interface AssessAttemptedSubmissionInput {
   captchaBeforeSubmission: CaptchaAssessment;
   obstructionActions: NonNullable<BrowserSession["obstructionActions"]>;
   preSubmitValidation: PreSubmitValidationDebugEvidence;
+  dialogSequence: number;
 }
 
 async function assess_attempted_submission({
@@ -1293,6 +1302,7 @@ async function assess_attempted_submission({
   captchaBeforeSubmission,
   obstructionActions,
   preSubmitValidation,
+  dialogSequence,
 }: AssessAttemptedSubmissionInput): Promise<SubmissionAssessment> {
   const page = browserSession.page;
   const deep_debug = browserSession.deepDebug;
@@ -1383,6 +1393,17 @@ async function assess_attempted_submission({
     messagesBeforeSubmission,
     browserSession.redactionValues ?? [],
   );
+  const post_submit_dialogs = browserSession.dialogController?.recordsSince(dialogSequence) ?? [];
+  const dialog_messages: MessageCandidateDebugInfo[] = post_submit_dialogs
+    .filter((record) => record.phase === "submit" && record.result === "handled" && record.message.length > 0)
+    .map((record) => ({ selector: "native-dialog", text: record.message, frameUrl: record.pageUrl }));
+  if (dialog_messages.some((message) => visible_success_message_matches(message.text))) {
+    visible_confirmation_evidence.confirmationEvidence = "successText";
+  }
+  visible_confirmation_evidence.rejectionEvidence.push(
+    ...classify_new_submission_messages(dialog_messages, browserSession.redactionValues ?? []),
+  );
+  visible_confirmation_evidence.newMessages.push(...dialog_messages);
   const messages_after_confirmation =
     await collect_visible_message_candidates(page);
   deep_debug?.record({
@@ -1401,6 +1422,7 @@ async function assess_attempted_submission({
       rejectionEvidence: visible_confirmation_evidence.rejectionEvidence,
       newMessageCandidates: visible_confirmation_evidence.newMessages,
       messageCandidates: messages_after_confirmation,
+      dialogs: post_submit_dialogs,
     },
   });
   const post_submit_messages = merge_message_candidates(

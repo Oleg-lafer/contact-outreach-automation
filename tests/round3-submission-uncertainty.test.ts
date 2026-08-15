@@ -16,8 +16,33 @@ import {
 import { analyze_network_submission_evidence } from "../src/contact_outreach_workflow/contact_channels/forms/pipeline/C_submission/C7_network_submission_evidence_(Deterministic).js";
 import { submission_signal_rulebook } from "../src/contact_outreach_workflow/contact_channels/forms/shared_files_forms/submission_signal_rulebook_(Support).js";
 import { score_submission_signals } from "../src/contact_outreach_workflow/contact_channels/forms/shared_files_forms/submission_signal_scoring_(Deterministic).js";
+import { create_browser_dialog_controller } from "../src/contact_outreach_workflow/shared_files_orchestrator/browser_dialog_controller_(Support).js";
 
 const click_timestamp = "2026-07-23T12:00:00.000Z";
+
+test("native dialogs are resolved with submit-scoped confirmation policy", async () => {
+  await with_page(async (page) => {
+    const controller = create_browser_dialog_controller();
+    controller.attach(page);
+    await page.setContent(`<button id="alert" onclick="alert('Thank you, message received')">Alert</button>
+      <button id="confirm" onclick="confirm('Send now?')">Confirm</button>
+      <button id="prompt" onclick="prompt('Secret?')">Prompt</button>`);
+
+    const marker = controller.beginSubmit();
+    await page.locator("#confirm").click();
+    controller.endSubmit();
+    await page.locator("#alert").click();
+    await page.locator("#prompt").click();
+
+    const records = controller.recordsSince(marker);
+    assert.deepEqual(records.map((record) => [record.type, record.phase, record.action, record.result]), [
+      ["confirm", "submit", "accept", "handled"],
+      ["alert", "browsing", "dismiss", "handled"],
+      ["prompt", "browsing", "dismiss", "handled"],
+    ]);
+    controller.detachAll();
+  });
+});
 
 test("Round 3 recognizes only bounded provider submission evidence", () => {
   const oscar = analyze_network_submission_evidence(

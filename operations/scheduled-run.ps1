@@ -46,10 +46,12 @@ function Write-RunStatus {
     $nowUtc = (Get-Date).ToUniversalTime()
     $launcherPid = $null
     $launcherAlive = $false
+    $launcherStartedAtUtc = $null
     if ($null -ne $script:launcherProcess) {
         $launcherPid = $script:launcherProcess.Id
         try {
             $launcherAlive = -not $script:launcherProcess.HasExited
+            $launcherStartedAtUtc = $script:launcherProcess.StartTime.ToUniversalTime().ToString("o")
         } catch {
             $launcherAlive = $false
         }
@@ -62,7 +64,9 @@ function Write-RunStatus {
         heartbeatAtUtc = $nowUtc.ToString("o")
         heartbeatIntervalSeconds = $heartbeatIntervalSeconds
         powershellProcessId = $PID
+        powershellStartedAtUtc = (Get-Process -Id $PID).StartTime.ToUniversalTime().ToString("o")
         launcherProcessId = $launcherPid
+        launcherStartedAtUtc = $launcherStartedAtUtc
         launcherProcessAlive = $launcherAlive
         exitCode = $ExitCode
         message = $Message

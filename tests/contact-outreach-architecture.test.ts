@@ -123,6 +123,15 @@ test("npm workflow commands target only the outreach entry point", async () => {
   assert.equal(packageJson.scripts.discovery, undefined);
 });
 
+test("scheduled monitoring validates process identity with start timestamps", async () => {
+  const runner = await readFile("operations/scheduled-run.ps1", "utf8");
+  const monitor = await readFile("operations/monitor-scheduled-run.ps1", "utf8");
+  assert.match(runner, /powershellStartedAtUtc/);
+  assert.match(runner, /launcherStartedAtUtc/);
+  assert.match(monitor, /Test-ProcessIdentity/);
+  assert.match(monitor, /StartTime\.ToUniversalTime/);
+});
+
 test("future ranking and sending stages remain tracked skeletons", async () => {
   const leafDirectories = [
     "emails/pipeline/B_ranking",

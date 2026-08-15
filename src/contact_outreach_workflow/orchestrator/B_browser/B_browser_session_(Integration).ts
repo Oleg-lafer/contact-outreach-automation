@@ -13,6 +13,7 @@ import type {
   OutreachBrowserSession,
 } from "../../shared_files_orchestrator/outreach_types_(Support).js";
 import { start_network_debug_recorder } from "../../shared_files_orchestrator/network_debug_(Support).js";
+import { create_browser_dialog_controller } from "../../shared_files_orchestrator/browser_dialog_controller_(Support).js";
 import {
   BrowserStageError,
   classify_browser_stage_failure,
@@ -139,6 +140,11 @@ export async function open_target_website(
         reason: error instanceof Error ? error.message : String(error),
       });
     });
+    const dialog_controller = create_browser_dialog_controller({
+      ...(options.deepDebug ? { deepDebug: options.deepDebug } : {}),
+      redactionValues: redaction_values,
+    });
+    dialog_controller.attach(page);
     phase = "INITIAL_NAVIGATION";
     let navigation_response: Response | null = null;
     let navigation_error: unknown;
@@ -213,6 +219,8 @@ export async function open_target_website(
       createChannelPage: async () => {
         const channel_page = await active_context.newPage();
         configure_page_timeouts(channel_page);
+        dialog_controller.attach(channel_page);
+        await options.deepDebug?.attachPage(channel_page).catch(() => undefined);
         return channel_page;
       },
       ...(navigation_error
@@ -221,9 +229,11 @@ export async function open_target_website(
       redactionValues: contact_request_redaction_values(contact_request),
       obstructionActions: [],
       close: async () => {
+        dialog_controller.detachAll();
         await stagehand_attachment?.close();
         await active_browser.close();
       },
+      dialogController: dialog_controller,
       ...(network_debug_recorder
         ? { networkDebugRecorder: network_debug_recorder }
         : {}),

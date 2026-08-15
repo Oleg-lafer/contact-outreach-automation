@@ -480,7 +480,7 @@ function merge_message_candidates(
   });
 }
 
-function visible_success_message_matches(
+export function visible_success_message_matches(
   value: string,
 ): boolean {
   const normalized = normalize_message_text(value);
