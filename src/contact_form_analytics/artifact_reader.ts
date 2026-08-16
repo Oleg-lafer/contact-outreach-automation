@@ -18,6 +18,10 @@ import type {
 
 const MAX_TEXT_BYTES = 1_000_000;
 const DEBUG_FILES = ["discovery-debug.json", "submission-debug.json", "missing-fields.json", "network.json"];
+const siteDirectoryId = (directoryName: string): number | null => {
+  const match = /^(?:website-)?(\d+)$/.exec(directoryName);
+  return match ? Number.parseInt(match[1]!, 10) : null;
+};
 
 interface JsonObject {
   [key: string]: unknown;
@@ -100,6 +104,7 @@ const parseBrowserStageSection = (section: string): BrowserStageArtifactEvidence
   const outcome = parseField(section, "Outcome");
   const category = parseField(section, "Classification");
   return {
+    schemaVersion: 1,
     entered: parseYesNo(parseField(section, "Entered")) ?? false,
     outcome: ["LOADED", "LOADED_AFTER_TIMEOUT", "FAILED", "NOT_ENTERED"].includes(outcome)
       ? outcome as BrowserStageArtifactEvidence["outcome"]
@@ -117,26 +122,32 @@ const parseBrowserStageSection = (section: string): BrowserStageArtifactEvidence
     meaningfulContent: parseYesNo(parseField(section, "Meaningful content present")),
     browserConnected: parseYesNo(parseField(section, "Browser connected")),
     pageClosed: parseYesNo(parseField(section, "Page closed")),
-    category: ["OUR_SYSTEM_FAILURE", "DESTINATION_FAILURE", "ACCESS_RESTRICTION", "UNDETERMINED"].includes(category)
-      ? category as BrowserStageArtifactEvidence["category"]
-      : "",
-    responsibleParty: parseField(section, "Responsible party"),
+    category: normalizeBrowserCategory(category),
+    responsibleParty: normalizeBrowserResponsibleParty(parseField(section, "Responsible party"), normalizeBrowserCategory(category)),
     subcategory: parseField(section, "Subcategory"),
     confidence: parseField(section, "Confidence"),
     ruleId: parseField(section, "Classification rule"),
     reason: parseField(section, "Browser-stage reason"),
+    classificationBasis: parseField(section, "Classification basis"),
+    strongestSupportingEvidence: parseField(section, "Strongest supporting evidence"),
+    strongestEvidenceAgainst: parseField(section, "Strongest evidence against"),
+    missingEvidence: parseField(section, "Missing evidence").split("|").map((item) => item.trim()).filter((item) => item && item !== "none"),
+    timeoutSource: parseField(section, "Timeout source"),
+    lastProgressAt: parseField(section, "Last progress at"),
+    lastProgressType: parseField(section, "Last progress type"),
     artifactPath: parseField(section, "Browser-stage artifact"),
     source: "structured_text",
   };
 };
 
 const browserStageFromJson = (value: unknown): BrowserStageArtifactEvidence | undefined => {
-  if (!isObject(value) || value.schemaVersion !== 1) return undefined;
+  if (!isObject(value) || (value.schemaVersion !== 1 && value.schemaVersion !== 2)) return undefined;
   const content = isObject(value.content) ? value.content : {};
   const health = isObject(value.health) ? value.health : {};
   const outcome = stringValue(value.outcome);
   const category = stringValue(value.category);
   return {
+    schemaVersion: value.schemaVersion,
     entered: Boolean(value.entered),
     outcome: ["LOADED", "LOADED_AFTER_TIMEOUT", "FAILED", "NOT_ENTERED"].includes(outcome)
       ? outcome as BrowserStageArtifactEvidence["outcome"]
@@ -154,17 +165,44 @@ const browserStageFromJson = (value: unknown): BrowserStageArtifactEvidence | un
     meaningfulContent: booleanValue(content.meaningfulContent),
     browserConnected: booleanValue(health.browserConnected),
     pageClosed: booleanValue(health.pageClosed),
-    category: ["OUR_SYSTEM_FAILURE", "DESTINATION_FAILURE", "ACCESS_RESTRICTION", "UNDETERMINED"].includes(category)
-      ? category as BrowserStageArtifactEvidence["category"]
-      : "",
-    responsibleParty: stringValue(value.responsibleParty),
+    category: normalizeBrowserCategory(category),
+    responsibleParty: normalizeBrowserResponsibleParty(stringValue(value.responsibleParty), normalizeBrowserCategory(category)),
     subcategory: stringValue(value.subcategory),
     confidence: stringValue(value.confidence),
     ruleId: stringValue(value.ruleId),
     reason: stringValue(value.reason),
+    classificationBasis: stringValue(value.classificationBasis),
+    strongestSupportingEvidence: stringValue(value.strongestSupportingEvidence),
+    strongestEvidenceAgainst: stringValue(value.strongestEvidenceAgainst),
+    missingEvidence: Array.isArray(value.missingEvidence)
+      ? value.missingEvidence.map(stringValue).filter(Boolean)
+      : [],
+    timeoutSource: stringValue(value.timeoutSource),
+    lastProgressAt: stringValue(value.lastProgressAt),
+    lastProgressType: stringValue(value.lastProgressType),
     artifactPath: stringValue(value.diagnosticArtifactPath),
     source: "debug_artifact",
   };
+};
+
+const normalizeBrowserCategory = (value: string): BrowserStageArtifactEvidence["category"] => {
+  if (value === "OUR_SYSTEM_FAILURE") return "OUR_AUTOMATION";
+  if (value === "DESTINATION_FAILURE") return "DESTINATION_WEBSITE";
+  return ["OUR_AUTOMATION", "DESTINATION_WEBSITE", "ACCESS_RESTRICTION", "NETWORK_INFRASTRUCTURE", "UNDETERMINED"].includes(value)
+    ? value as BrowserStageArtifactEvidence["category"]
+    : "";
+};
+
+const normalizeBrowserResponsibleParty = (
+  value: string,
+  category: BrowserStageArtifactEvidence["category"],
+): string => {
+  if (value === "OUR_SYSTEM") return "OUR_AUTOMATION";
+  if (value === "DESTINATION") {
+    return category === "ACCESS_RESTRICTION" ? "ACCESS_RESTRICTION" : "DESTINATION_WEBSITE";
+  }
+  if (value === "THIRD_PARTY_PATH") return "NETWORK_INFRASTRUCTURE";
+  return value;
 };
 
 const parseInteger = (value: string): number | null =>
@@ -582,7 +620,8 @@ const formTextFromOutreachSections = (sections: Map<string, string>): string =>
 
 const readSite = async (runPath: string, directoryName: string): Promise<SiteEvidence> => {
   const directory = path.join(runPath, directoryName);
-  const numericId = Number.parseInt(directoryName, 10);
+  const numericId = siteDirectoryId(directoryName);
+  if (numericId === null) throw new Error(`Unsupported site directory name: ${directoryName}`);
   const names = await readdir(directory);
   const inputName = findInputPath(names);
   const inputPath = inputName ? path.join(directory, inputName) : undefined;
@@ -996,8 +1035,8 @@ export const readRunArtifacts = async (requestedPath: string): Promise<RunArtifa
 
   const entries = await readdir(runPath, { withFileTypes: true });
   const numericDirectories = entries
-    .filter((entry) => entry.isDirectory() && /^\d+$/.test(entry.name))
-    .sort((left, right) => Number.parseInt(left.name, 10) - Number.parseInt(right.name, 10));
+    .filter((entry) => entry.isDirectory() && siteDirectoryId(entry.name) !== null)
+    .sort((left, right) => siteDirectoryId(left.name)! - siteDirectoryId(right.name)!);
   if (numericDirectories.length === 0) {
     throw new Error(`No numeric site directories or recognizable run artifacts were found in: ${runPath}`);
   }
@@ -1009,7 +1048,7 @@ export const readRunArtifacts = async (requestedPath: string): Promise<RunArtifa
     sites.push(...(await Promise.all(batch.map((entry) => readSite(runPath, entry.name)))));
   }
   if (!sites.some((site) => site.inputPath || site.primaryJsonPath || site.primaryTextPath)) {
-    throw new Error(`No recognizable input or result artifacts were found in numeric directories under: ${runPath}`);
+    throw new Error(`No recognizable input or result artifacts were found in site directories under: ${runPath}`);
   }
 
   const metadata = await readSummaryMetadata(runPath);

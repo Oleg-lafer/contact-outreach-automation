@@ -113,15 +113,17 @@ export type BrowserStageOutcome =
   | "NOT_ENTERED";
 
 export type BrowserFailureCategory =
-  | "OUR_SYSTEM_FAILURE"
-  | "DESTINATION_FAILURE"
+  | "OUR_AUTOMATION"
+  | "DESTINATION_WEBSITE"
   | "ACCESS_RESTRICTION"
+  | "NETWORK_INFRASTRUCTURE"
   | "UNDETERMINED";
 
 export type BrowserResponsibleParty =
-  | "OUR_SYSTEM"
-  | "DESTINATION"
-  | "THIRD_PARTY_PATH"
+  | "OUR_AUTOMATION"
+  | "DESTINATION_WEBSITE"
+  | "ACCESS_RESTRICTION"
+  | "NETWORK_INFRASTRUCTURE"
   | "UNKNOWN";
 
 export type BrowserFailureConfidence = "HIGH" | "MEDIUM" | "LOW";
@@ -141,11 +143,34 @@ export interface BrowserStageErrorEvidence {
   name: string;
   code?: string;
   message: string;
+  stack?: string;
   stackFingerprint?: string;
+  cause?: BrowserStageErrorEvidence;
+}
+
+export interface BrowserStageTimelineEvent {
+  sequence: number;
+  at: string;
+  elapsedMs: number;
+  type: string;
+  url?: string;
+  status?: number;
+  detail?: string;
+  initiator?: "OUR_AUTOMATION" | "PLAYWRIGHT" | "BROWSER" | "DESTINATION" | "UNKNOWN";
+}
+
+export interface BrowserStageResourceSnapshot {
+  at: string;
+  milestone: "LAUNCH" | "NAVIGATION_START" | "FAILURE" | "CLEANUP";
+  rssBytes: number;
+  heapUsedBytes: number;
+  userCpuMicros: number;
+  systemCpuMicros: number;
 }
 
 export interface BrowserStageContentEvidence {
   inspected: boolean;
+  inspectionError?: string;
   readyState?: string;
   titleLength?: number;
   titlePreview?: string;
@@ -163,10 +188,13 @@ export interface BrowserStageHealthEvidence {
   contextClosedObserved: boolean;
   pageCrashObserved: boolean;
   pageCloseObserved: boolean;
+  browserDisconnectInitiator?: string;
+  contextCloseInitiator?: string;
+  pageCloseInitiator?: string;
 }
 
 export interface BrowserStageResult {
-  schemaVersion: 1;
+  schemaVersion: 2;
   entered: boolean;
   outcome: BrowserStageOutcome;
   originalUrl: string;
@@ -180,11 +208,24 @@ export interface BrowserStageResult {
   timeoutMs: number;
   waitUntil: "domcontentloaded";
   redirectChain: string[];
+  normalizedUrl: string;
+  committedUrl?: string;
+  navigationStartedAt: string;
+  navigationFinishedAt: string;
+  lastProgressAt?: string;
+  lastProgressType?: string;
+  timeoutSource?: "PLAYWRIGHT_NAVIGATION" | "WORKFLOW_WATCHDOG" | "CAMPAIGN_RUNNER" | "UNKNOWN";
+  cancellationSource?: string;
+  timeline: BrowserStageTimelineEvent[];
   mainDocumentRequested: boolean;
   mainDocumentReceived: boolean;
   mainDocumentStatus?: number;
   mainDocumentStatusText?: string;
   mainDocumentFailure?: string;
+  responseHeadersReceived: boolean;
+  connectionEstablished?: boolean;
+  tlsEstablished?: boolean;
+  transportEvidenceBasis: "DIRECT" | "INFERRED" | "UNAVAILABLE";
   content: BrowserStageContentEvidence;
   health: BrowserStageHealthEvidence;
   proxyConfigured: boolean;
@@ -197,6 +238,7 @@ export interface BrowserStageResult {
     userCpuMicros: number;
     systemCpuMicros: number;
   };
+  resourceSnapshots: BrowserStageResourceSnapshot[];
   runContext?: {
     campaignId?: number;
     campaignName?: string;
@@ -211,12 +253,16 @@ export interface BrowserStageResult {
   reason?: string;
   evidence: string[];
   contradictions: string[];
+  strongestSupportingEvidence?: string;
+  strongestEvidenceAgainst?: string;
+  classificationBasis?: "DIRECT" | "INFERRED";
+  missingEvidence: string[];
   error?: BrowserStageErrorEvidence;
   diagnosticArtifactPath?: string;
 }
 
 export interface BrowserStageRunSummary {
-  schemaVersion: 1;
+  schemaVersion: 2;
   generatedAt: string;
   totalWebsites: number;
   entered: number;
@@ -228,6 +274,7 @@ export interface BrowserStageRunSummary {
   categoryPercentagesOfFailures: Record<BrowserFailureCategory, number>;
   categoryPercentagesOfEntrants: Record<BrowserFailureCategory, number>;
   subcategoryCounts: Record<string, number>;
+  ourAutomationSubcategoryCounts: Record<string, number>;
   ledger: Array<{ siteId: string; websiteUrl: string; browserStage: BrowserStageResult }>;
   preBrowserExclusions: Array<{ websiteUrl: string; reason: string }>;
   reconciliation: {

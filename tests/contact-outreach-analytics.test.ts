@@ -48,9 +48,10 @@ const writeAggregate = async (
   id: number,
   email: DiscoveryFixture,
   meeting: DiscoveryFixture,
+  directoryPrefix = "",
 ): Promise<void> => {
   const siteId = String(id).padStart(3, "0");
-  const directory = path.join(runPath, siteId);
+  const directory = path.join(runPath, `${directoryPrefix}${siteId}`);
   await mkdir(directory, { recursive: true });
   await writeFile(
     path.join(directory, `input-id-${id}.json`),
@@ -91,6 +92,18 @@ const writeAggregate = async (
   );
 };
 
+test("database website-prefixed site directories are analyzed with their numeric IDs", async () => {
+  const runPath = await makeRun();
+  await writeAggregate(runPath, 42, completeEmail, completeMeeting, "website-");
+
+  const { result } = await analyzeRun(runPath, { writeOutputs: false });
+
+  assert.equal(result.processed, 1);
+  assert.equal(result.channels.forms.sites[0]?.numericId, 42);
+  assert.equal(result.channels.emails.sites[0]?.numericId, 42);
+  assert.equal(result.channels.meetings.sites[0]?.numericId, 42);
+});
+
 const completeEmail: DiscoveryFixture = {
   status: "SUCCESS",
   items: ["sales@example.test", "hello@example.test"],
@@ -124,7 +137,7 @@ test("aggregate reports produce independent forms, email, and meeting evaluation
   );
 
   const { result } = await analyzeRun(runPath, { writeOutputs: false });
-  assert.equal(result.schemaVersion, 3);
+  assert.equal(result.schemaVersion, 4);
   assert.equal(result.planned, 1);
   assert.equal(result.channels.forms.counts.completed, 1);
   assert.equal(result.channels.forms.sites[0]?.status, "SUCCESS");

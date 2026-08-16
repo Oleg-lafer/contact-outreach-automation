@@ -950,7 +950,16 @@ test("analysis writes latest and collision-safe history outputs and ignores stal
   ]);
   assert.deepEqual(
     (await readdir(path.join(first.latestDirectory!, "stages", "browser"))).sort(),
-    ["browser-stage-failures.csv", "browser-stage-summary.json", "browser-stage-summary.txt"],
+    [
+      "browser-stage-access-restriction.csv",
+      "browser-stage-destination-website.csv",
+      "browser-stage-failures.csv",
+      "browser-stage-network-infrastructure.csv",
+      "browser-stage-our-automation.csv",
+      "browser-stage-summary.json",
+      "browser-stage-summary.txt",
+      "browser-stage-undetermined.csv",
+    ],
   );
   const formsDirectory = path.join(first.latestDirectory!, "channels", "forms");
   assert.deepEqual((await readdir(formsDirectory)).sort(), [

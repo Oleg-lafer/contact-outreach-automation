@@ -10,9 +10,10 @@ import type {
 } from "./outreach_types_(Support).js";
 
 const CATEGORIES: BrowserFailureCategory[] = [
-  "OUR_SYSTEM_FAILURE",
-  "DESTINATION_FAILURE",
+  "OUR_AUTOMATION",
+  "DESTINATION_WEBSITE",
   "ACCESS_RESTRICTION",
+  "NETWORK_INFRASTRUCTURE",
   "UNDETERMINED",
 ];
 
@@ -30,18 +31,32 @@ export function normalize_browser_stage_error(
   error: unknown,
   redactionValues: readonly string[],
 ): BrowserStageErrorEvidence {
+  return normalize_error_cause(error, redactionValues, new Set<unknown>(), 0);
+}
+
+function normalize_error_cause(
+  error: unknown,
+  redactionValues: readonly string[],
+  seen: Set<unknown>,
+  depth: number,
+): BrowserStageErrorEvidence {
   const source = error instanceof Error ? error : new Error(String(error));
   const code = error && typeof error === "object" && "code" in error
     ? String((error as { code?: unknown }).code ?? "")
     : "";
-  const stack = redact_browser_text(source.stack ?? "", redactionValues, 4_000);
+  const stack = redact_browser_text(source.stack ?? "", redactionValues, 12_000);
+  const cause = source.cause;
+  const canCaptureCause = cause !== undefined && depth < 8 && !seen.has(cause);
+  seen.add(error);
   return {
     name: source.name || "Error",
     ...(code ? { code } : {}),
     message: redact_browser_text(source.message, redactionValues, 2_000),
-    ...(stack
-      ? { stackFingerprint: createHash("sha256").update(stack).digest("hex").slice(0, 16) }
-      : {}),
+    ...(stack ? {
+      stack,
+      stackFingerprint: createHash("sha256").update(stack).digest("hex").slice(0, 16),
+    } : {}),
+    ...(canCaptureCause ? { cause: normalize_error_cause(cause, redactionValues, seen, depth + 1) } : {}),
   };
 }
 
@@ -63,6 +78,9 @@ export function classify_browser_stage_failure(
     ruleId: string,
     reason: string,
     evidence: string[],
+    basis: NonNullable<BrowserStageResult["classificationBasis"]>,
+    evidenceAgainst = "No contradictory evidence was recorded.",
+    missingEvidence: string[] = [],
   ): BrowserStageResult => ({
     ...result,
     category,
@@ -72,17 +90,22 @@ export function classify_browser_stage_failure(
     ruleId,
     reason,
     evidence: [...new Set([...result.evidence, ...evidence])],
+    strongestSupportingEvidence: evidence[0] ?? reason,
+    strongestEvidenceAgainst: evidenceAgainst,
+    classificationBasis: basis,
+    missingEvidence: [...new Set([...result.missingEvidence, ...missingEvidence])],
   });
 
   if (result.phase !== "INITIAL_NAVIGATION" && result.phase !== "POST_TIMEOUT_INSPECTION") {
     return failed(
-      "OUR_SYSTEM_FAILURE",
-      "OUR_SYSTEM",
+      "OUR_AUTOMATION",
+      "OUR_AUTOMATION",
       phase_subcategory(result.phase),
       "HIGH",
       "BRW-OUR-RUNTIME-PHASE",
       `Our browser runtime failed during ${result.phase.toLowerCase().replaceAll("_", " ")}.`,
       [`phase=${result.phase}`],
+      "DIRECT",
     );
   }
   if (
@@ -92,9 +115,14 @@ export function classify_browser_stage_failure(
     result.health.pageCrashObserved ||
     result.health.pageCloseObserved
   ) {
+    const initiatedByOurAutomation = [
+      result.health.browserDisconnectInitiator,
+      result.health.contextCloseInitiator,
+      result.health.pageCloseInitiator,
+    ].includes("OUR_AUTOMATION");
     return failed(
-      "OUR_SYSTEM_FAILURE",
-      "OUR_SYSTEM",
+      "OUR_AUTOMATION",
+      "OUR_AUTOMATION",
       result.health.pageCrashObserved ? "page_crash" : "browser_context_or_page_unhealthy",
       "HIGH",
       "BRW-OUR-BROWSER-HEALTH",
@@ -103,29 +131,50 @@ export function classify_browser_stage_failure(
         `browserConnected=${result.health.browserConnected}`,
         `pageCrashObserved=${result.health.pageCrashObserved}`,
         `pageCloseObserved=${result.health.pageCloseObserved}`,
+        `closureInitiator=${initiatedByOurAutomation ? "OUR_AUTOMATION" : "unknown"}`,
       ],
+      initiatedByOurAutomation ? "DIRECT" : "INFERRED",
+      "The retained evidence does not establish why the browser runtime became unhealthy.",
+      initiatedByOurAutomation
+        ? ["whether the locally initiated closure was expected at this workflow point"]
+        : ["browser process exit reason", "lifecycle event initiator", "host resource pressure at event time"],
     );
   }
   if (/err_network_access_denied|proxy authentication|required proxy|eproxy/.test(text)) {
     return failed(
-      "OUR_SYSTEM_FAILURE",
-      "OUR_SYSTEM",
+      "OUR_AUTOMATION",
+      "OUR_AUTOMATION",
       /proxy/.test(text) ? "proxy_configuration_or_connection" : "local_network_access_denied",
       "HIGH",
       "BRW-OUR-NETWORK-POLICY",
       "A local network or proxy policy prevented the browser from reaching the destination.",
       [result.mainDocumentFailure ?? result.error?.message ?? "local network policy error"],
+      "DIRECT",
     );
   }
   if (/err_insufficient_resources|\benomem\b|out of memory|too many open files|\bemfile\b|\benfile\b|insufficient system resources/.test(text)) {
     return failed(
-      "OUR_SYSTEM_FAILURE",
-      "OUR_SYSTEM",
+      "OUR_AUTOMATION",
+      "OUR_AUTOMATION",
       "local_resource_exhaustion",
       "HIGH",
       "BRW-OUR-RESOURCE-EXHAUSTION",
       "The local browser runtime reported explicit resource exhaustion.",
       [result.mainDocumentFailure ?? result.error?.message ?? "local resource exhaustion"],
+      "DIRECT",
+    );
+  }
+
+  if (result.content.meaningfulContent && result.content.accessRestrictionIndicators.length === 0) {
+    return failed(
+      "OUR_AUTOMATION",
+      "OUR_AUTOMATION",
+      "usable_navigation_misclassified_as_failure",
+      "HIGH",
+      "BRW-OUR-MISCLASSIFIED-USABLE-CONTENT",
+      "Our browser-stage decision marked a healthy page with meaningful usable content as failed.",
+      ["meaningfulContent=true", `mainDocumentStatus=${result.mainDocumentStatus ?? "none"}`],
+      "DIRECT",
     );
   }
 
@@ -133,7 +182,7 @@ export function classify_browser_stage_failure(
   if (status === 401 || status === 403 || status === 429 || result.content.accessRestrictionIndicators.length > 0) {
     return failed(
       "ACCESS_RESTRICTION",
-      status === 429 ? "UNKNOWN" : "DESTINATION",
+      "ACCESS_RESTRICTION",
       status ? `http_${status}` : "antibot_or_captcha_challenge",
       "HIGH",
       "BRW-DESTINATION-ACCESS-RESTRICTION",
@@ -144,64 +193,94 @@ export function classify_browser_stage_failure(
         ...(status ? [`mainDocumentStatus=${status}`] : []),
         ...result.content.accessRestrictionIndicators,
       ],
+      "DIRECT",
     );
   }
   if (/err_cert_|err_ssl_|certificate|tls/.test(text)) {
     return failed(
-      "DESTINATION_FAILURE",
-      "DESTINATION",
+      "DESTINATION_WEBSITE",
+      "DESTINATION_WEBSITE",
       "tls_or_certificate_failure",
       "HIGH",
       "BRW-DESTINATION-TLS",
       "The destination-specific TLS or certificate negotiation failed while the browser remained healthy.",
       [result.mainDocumentFailure ?? result.error?.message ?? "TLS failure"],
+      "INFERRED",
+      "A client-side TLS configuration incompatibility cannot be excluded from passive evidence.",
+      ["independent TLS probe", "peer certificate chain details"],
     );
   }
   if (/err_connection_refused|connection refused/.test(text)) {
     return failed(
-      "DESTINATION_FAILURE",
-      "DESTINATION",
+      "DESTINATION_WEBSITE",
+      "DESTINATION_WEBSITE",
       "connection_refused",
       "HIGH",
       "BRW-DESTINATION-CONNECTION-REFUSED",
       "The destination refused the main-document connection while the browser remained healthy.",
       [result.mainDocumentFailure ?? result.error?.message ?? "connection refused"],
+      "INFERRED",
+      "Passive browser evidence cannot exclude an intermediary rejecting the connection.",
     );
   }
   if (/err_too_many_redirects|redirect loop|too many redirects/.test(text)) {
     return failed(
-      "DESTINATION_FAILURE",
-      "DESTINATION",
+      "DESTINATION_WEBSITE",
+      "DESTINATION_WEBSITE",
       "redirect_loop",
       "HIGH",
       "BRW-DESTINATION-REDIRECT-LOOP",
       "The destination produced a redirect loop.",
       [`redirectCount=${result.redirectChain.length}`],
+      "DIRECT",
     );
   }
   if (status !== undefined && status >= 500) {
     return failed(
-      "DESTINATION_FAILURE",
-      "DESTINATION",
+      "DESTINATION_WEBSITE",
+      "DESTINATION_WEBSITE",
       "http_5xx",
       "HIGH",
       "BRW-DESTINATION-HTTP-5XX",
       `The destination returned HTTP ${status} for the main document.`,
       [`mainDocumentStatus=${status}`],
+      "DIRECT",
     );
   }
   if (/err_name_not_resolved|dns/.test(text)) {
     return failed(
-      "UNDETERMINED",
-      "THIRD_PARTY_PATH",
-      "dns_failure_origin_unknown",
-      "LOW",
-      "BRW-UNDETERMINED-DNS",
-      "DNS resolution failed, but passive browser evidence cannot prove whether the destination DNS or our resolver path was responsible.",
+      "NETWORK_INFRASTRUCTURE",
+      "NETWORK_INFRASTRUCTURE",
+      "dns_resolution_failure",
+      "MEDIUM",
+      "BRW-NETWORK-DNS",
+      "Chromium reported DNS resolution failure; the failing DNS authority or resolver path remains unknown.",
       [result.mainDocumentFailure ?? result.error?.message ?? "DNS failure"],
+      "INFERRED",
+      "The evidence does not distinguish destination DNS configuration from the local resolver path.",
+      ["resolver query result", "authoritative DNS response"],
     );
   }
   if (/timeout|timed out|etimedout/.test(text)) {
+    const progressBeforeTimeout = result.mainDocumentReceived || result.redirectChain.length > 1;
+    if (result.timeoutSource === "PLAYWRIGHT_NAVIGATION" && progressBeforeTimeout) {
+      return failed(
+        "OUR_AUTOMATION",
+        "OUR_AUTOMATION",
+        "navigation_timeout_policy_ended_progressing_load",
+        "MEDIUM",
+        "BRW-OUR-TIMEOUT-WITH-PROGRESS",
+        "Our configured navigation deadline ended a navigation after destination progress had been observed.",
+        [
+          `timeoutSource=${result.timeoutSource}`,
+          `mainDocumentReceived=${result.mainDocumentReceived}`,
+          `redirectCount=${result.redirectChain.length}`,
+        ],
+        "DIRECT",
+        "The page had not produced meaningful usable content before the deadline.",
+        ["whether waiting longer would have completed navigation"],
+      );
+    }
     return failed(
       "UNDETERMINED",
       "UNKNOWN",
@@ -215,17 +294,23 @@ export function classify_browser_stage_failure(
         `mainDocumentReceived=${result.mainDocumentReceived}`,
         `meaningfulContent=${result.content.meaningfulContent}`,
       ],
+      "INFERRED",
+      "The configured timeout may have contributed, but no continuing destination progress was retained.",
+      ["DNS/TCP/TLS phase timing", "independent destination reachability", "progress after the deadline"],
     );
   }
   if (/err_connection_(reset|closed|aborted)/.test(text)) {
     return failed(
-      "UNDETERMINED",
-      "UNKNOWN",
-      "connection_reset_origin_unknown",
+      "NETWORK_INFRASTRUCTURE",
+      "NETWORK_INFRASTRUCTURE",
+      "connection_reset",
       "MEDIUM",
       "BRW-UNDETERMINED-CONNECTION-RESET",
       "The connection was reset, but the retained evidence cannot prove which side initiated it.",
       [result.mainDocumentFailure ?? result.error?.message ?? "connection reset"],
+      "INFERRED",
+      "The evidence cannot identify whether the destination, an intermediary, or the client network reset the connection.",
+      ["packet-level reset origin"],
     );
   }
   return failed(
@@ -236,6 +321,14 @@ export function classify_browser_stage_failure(
     "BRW-UNDETERMINED-UNKNOWN",
     "The browser-stage evidence is insufficient to assign responsibility.",
     [result.error?.message ?? "unknown browser-stage failure"],
+    "INFERRED",
+    "No evidence supports a more specific competing classification.",
+    [
+      "network phase details",
+      "browser lifecycle initiator",
+      "complete causal exception chain",
+      "independent reachability evidence",
+    ],
   );
 }
 
@@ -292,13 +385,26 @@ export function create_browser_stage_run_summary(
         ledger.filter((entry) => (entry.browserStage.subcategory ?? "unknown_browser_failure") === subcategory).length,
       ]),
   );
+  const ourAutomationSubcategoryCounts = Object.fromEntries(
+    [...new Set(
+      ledger
+        .filter((entry) => entry.browserStage.category === "OUR_AUTOMATION")
+        .map((entry) => entry.browserStage.subcategory ?? "unknown_automation_failure"),
+    )].sort().map((subcategory) => [
+      subcategory,
+      ledger.filter((entry) =>
+        entry.browserStage.category === "OUR_AUTOMATION" &&
+        (entry.browserStage.subcategory ?? "unknown_automation_failure") === subcategory
+      ).length,
+    ]),
+  );
   const loaded = stages.filter((entry) => entry.browserStage.outcome === "LOADED").length;
   const loadedAfterTimeout = stages.filter(
     (entry) => entry.browserStage.outcome === "LOADED_AFTER_TIMEOUT",
   ).length;
   const categorySum = Object.values(categoryCounts).reduce((sum, count) => sum + count, 0);
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     generatedAt: generatedAt.toISOString(),
     totalWebsites: outcomes.length + additionalExclusions.length,
     entered,
@@ -310,6 +416,7 @@ export function create_browser_stage_run_summary(
     categoryPercentagesOfFailures,
     categoryPercentagesOfEntrants,
     subcategoryCounts,
+    ourAutomationSubcategoryCounts,
     ledger,
     preBrowserExclusions,
     reconciliation: {
@@ -327,12 +434,23 @@ export async function write_browser_stage_run_summary_files(
 ): Promise<void> {
   const target = resolve(directory);
   await mkdir(target, { recursive: true });
+  const categoryFiles = CATEGORIES.map((category) =>
+    writeFile(
+      resolve(target, `browser-stage-${category.toLowerCase().replaceAll("_", "-")}.csv`),
+      format_browser_stage_failure_csv({
+        ...summary,
+        ledger: summary.ledger.filter((entry) => entry.browserStage.category === category),
+      }),
+      "utf8",
+    )
+  );
   await Promise.all([
     writeFile(
       resolve(target, "browser-stage-summary.json"),
       `${JSON.stringify(summary, null, 2)}\n`,
       "utf8",
     ),
+    ...categoryFiles,
     writeFile(
       resolve(target, "browser-stage-summary.txt"),
       format_browser_stage_summary(summary),
@@ -368,6 +486,11 @@ export function format_browser_stage_summary(summary: BrowserStageRunSummary): s
       ? ["none"]
       : Object.entries(summary.subcategoryCounts).map(([subcategory, count]) => `${subcategory}: ${count}`)),
     "",
+    "OUR AUTOMATION BREAKDOWN",
+    ...(Object.keys(summary.ourAutomationSubcategoryCounts).length === 0
+      ? ["none"]
+      : Object.entries(summary.ourAutomationSubcategoryCounts).map(([subcategory, count]) => `${subcategory}: ${count}`)),
+    "",
     "RECONCILIATION",
     `Entrants equal loaded plus failures: ${summary.reconciliation.entrantsEqualLoadedPlusFailures ? "yes" : "NO"}`,
     `Failures equal category sum: ${summary.reconciliation.failuresEqualCategorySum ? "yes" : "NO"}`,
@@ -396,6 +519,8 @@ function format_browser_stage_failure_csv(summary: BrowserStageRunSummary): stri
       "site_id", "website_url", "category", "responsible_party", "subcategory", "confidence", "rule_id",
       "phase", "operation", "duration_ms", "main_document_received", "main_document_status",
       "meaningful_content", "reason", "diagnostic_artifact_path",
+      "classification_basis", "strongest_supporting_evidence", "strongest_evidence_against",
+      "missing_evidence", "timeout_source", "last_progress_at", "last_progress_type",
     ],
     ...summary.ledger.map(({ siteId, websiteUrl, browserStage }) => [
       siteId,
@@ -413,6 +538,13 @@ function format_browser_stage_failure_csv(summary: BrowserStageRunSummary): stri
       browserStage.content.meaningfulContent,
       browserStage.reason ?? "",
       browserStage.diagnosticArtifactPath ?? "",
+      browserStage.classificationBasis ?? "",
+      browserStage.strongestSupportingEvidence ?? "",
+      browserStage.strongestEvidenceAgainst ?? "",
+      browserStage.missingEvidence.join(" | "),
+      browserStage.timeoutSource ?? "",
+      browserStage.lastProgressAt ?? "",
+      browserStage.lastProgressType ?? "",
     ]),
   ];
   return `${rows.map((row) => row.map(csv_value).join(",")).join("\n")}\n`;

@@ -74,7 +74,8 @@ export async function open_target_website(
     contact_request_redaction_values(contact_request);
   const started_at = new Date();
   const monotonic_started_at = performance.now();
-  const state: BrowserObservationState = create_browser_observation_state();
+  const state: BrowserObservationState = create_browser_observation_state(redaction_values, Boolean(options.deepDebug));
+  capture_resource_snapshot(state, "LAUNCH");
   let phase: BrowserFailurePhase = "LOOPBACK_PORT_RESERVATION";
   let browser: Browser | undefined;
   let context: BrowserContext | undefined;
@@ -108,19 +109,23 @@ export async function open_target_website(
     });
     browser.on("disconnected", () => {
       state.browserDisconnectedObserved = true;
+      push_browser_event(state, "browser-disconnected", { initiator: state.browserCloseInitiator ?? "UNKNOWN" });
     });
     phase = "CONTEXT_CREATION";
     context = await browser.newContext();
     context.on("close", () => {
       state.contextClosedObserved = true;
+      push_browser_event(state, "context-closed", { initiator: state.contextCloseInitiator ?? "UNKNOWN" });
     });
     phase = "PAGE_CREATION";
     page = await context.newPage();
     page.on("crash", () => {
       state.pageCrashObserved = true;
+      push_browser_event(state, "page-crashed", { initiator: "BROWSER" });
     });
     page.on("close", () => {
       state.pageCloseObserved = true;
+      push_browser_event(state, "page-closed", { initiator: state.pageCloseInitiator ?? "UNKNOWN" });
     });
     configure_page_timeouts(page);
     install_initial_navigation_observers(page, state, redaction_values);
@@ -146,6 +151,12 @@ export async function open_target_website(
     });
     dialog_controller.attach(page);
     phase = "INITIAL_NAVIGATION";
+    state.navigationStartedAt = new Date().toISOString();
+    capture_resource_snapshot(state, "NAVIGATION_START");
+    push_browser_event(state, "navigation-started", {
+      url: redact_browser_text(contact_request.websiteUrl, redaction_values, 2_000),
+      initiator: "OUR_AUTOMATION",
+    });
     let navigation_response: Response | null = null;
     let navigation_error: unknown;
     try {
@@ -156,6 +167,13 @@ export async function open_target_website(
     } catch (error) {
       navigation_error = error;
     }
+    state.navigationFinishedAt = new Date().toISOString();
+    push_browser_event(state, navigation_error ? "navigation-failed" : "navigation-finished", {
+      ...(navigation_error
+        ? { detail: redact_browser_text(describe_error(navigation_error), redaction_values, 2_000) }
+        : {}),
+      initiator: navigation_error ? "PLAYWRIGHT" : "DESTINATION",
+    });
     if (navigation_response) capture_main_document_response(navigation_response, state);
     const content = await inspect_loaded_page(page, redaction_values);
     const health = browser_health(browser, page, state);
@@ -181,6 +199,8 @@ export async function open_target_website(
           : "LOADED",
     });
     if (browser_stage.outcome === "FAILED") {
+      capture_resource_snapshot(state, "FAILURE");
+      browser_stage.resourceSnapshots = [...state.resourceSnapshots];
       browser_stage = classify_browser_stage_failure(browser_stage);
     } else if (salvage_timeout) {
       browser_stage.reason = "Navigation timed out after the main document produced meaningful usable content; the existing page was retained without retrying navigation.";
@@ -229,6 +249,10 @@ export async function open_target_website(
       redactionValues: contact_request_redaction_values(contact_request),
       obstructionActions: [],
       close: async () => {
+        state.browserCloseInitiator = "OUR_AUTOMATION";
+        state.contextCloseInitiator = "OUR_AUTOMATION";
+        state.pageCloseInitiator = "OUR_AUTOMATION";
+        capture_resource_snapshot(state, "CLEANUP");
         dialog_controller.detachAll();
         await stagehand_attachment?.close();
         await active_browser.close();
@@ -251,12 +275,17 @@ export async function open_target_website(
     return session;
   } catch (error) {
     if (error instanceof BrowserStageError) {
+      state.browserCloseInitiator = "OUR_AUTOMATION";
+      state.contextCloseInitiator = "OUR_AUTOMATION";
+      state.pageCloseInitiator = "OUR_AUTOMATION";
+      capture_resource_snapshot(state, "CLEANUP");
       await browser?.close().catch(() => undefined);
       throw error;
     }
     const content = page
       ? await inspect_loaded_page(page, redaction_values)
       : empty_content_evidence();
+    capture_resource_snapshot(state, "FAILURE");
     let browser_stage = create_browser_stage_result({
       originalUrl: contact_request.websiteUrl,
       finalUrl: page ? safe_page_url(page, contact_request.websiteUrl) : contact_request.websiteUrl,
@@ -274,6 +303,10 @@ export async function open_target_website(
     browser_stage = classify_browser_stage_failure(browser_stage);
     await write_browser_stage_artifact(options.deepDebug, browser_stage);
     record_browser_stage_result(options.deepDebug, browser_stage);
+    state.browserCloseInitiator = "OUR_AUTOMATION";
+    state.contextCloseInitiator = "OUR_AUTOMATION";
+    state.pageCloseInitiator = "OUR_AUTOMATION";
+    capture_resource_snapshot(state, "CLEANUP");
     await browser?.close().catch(() => undefined);
     throw new BrowserStageError(
       `Could not open the target website${engine === "stagehand" ? " for Stagehand attachment" : ""}: ${describe_error(error)}`,
@@ -294,9 +327,28 @@ interface BrowserObservationState {
   contextClosedObserved: boolean;
   pageCrashObserved: boolean;
   pageCloseObserved: boolean;
+  browserCloseInitiator?: BrowserStageResult["timeline"][number]["initiator"];
+  contextCloseInitiator?: BrowserStageResult["timeline"][number]["initiator"];
+  pageCloseInitiator?: BrowserStageResult["timeline"][number]["initiator"];
+  navigationStartedAt?: string;
+  navigationFinishedAt?: string;
+  lastProgressAt?: string;
+  lastProgressType?: string;
+  committedUrl?: string;
+  responseHeadersReceived: boolean;
+  connectionEstablished?: boolean;
+  tlsEstablished?: boolean;
+  timeline: BrowserStageResult["timeline"];
+  resourceSnapshots: BrowserStageResult["resourceSnapshots"];
+  observationStartedAt: number;
+  redactionValues: readonly string[];
+  detailedDiagnosticsEnabled: boolean;
 }
 
-function create_browser_observation_state(): BrowserObservationState {
+function create_browser_observation_state(
+  redactionValues: readonly string[],
+  detailedDiagnosticsEnabled: boolean,
+): BrowserObservationState {
   return {
     redirectChain: [],
     mainDocumentRequested: false,
@@ -305,6 +357,12 @@ function create_browser_observation_state(): BrowserObservationState {
     contextClosedObserved: false,
     pageCrashObserved: false,
     pageCloseObserved: false,
+    responseHeadersReceived: false,
+    timeline: [],
+    resourceSnapshots: [],
+    observationStartedAt: performance.now(),
+    redactionValues,
+    detailedDiagnosticsEnabled,
   };
 }
 
@@ -318,13 +376,19 @@ function install_initial_navigation_observers(
   page.on("request", (request) => {
     if (!main_document_request(request)) return;
     state.mainDocumentRequested = true;
+    push_browser_event(state, "main-document-request", {
+      url: redact_browser_text(request.url(), redaction_values, 2_000),
+      initiator: "OUR_AUTOMATION",
+    });
     const url = redact_browser_text(request.url(), redaction_values, 2_000);
     if (state.redirectChain.at(-1) !== url && state.redirectChain.length < 20) {
       state.redirectChain.push(url);
     }
   });
   page.on("response", (response) => {
-    if (main_document_request(response.request())) capture_main_document_response(response, state);
+    if (!main_document_request(response.request())) return;
+    capture_main_document_response(response, state);
+    void capture_transport_evidence(response, state);
   });
   page.on("requestfailed", (request) => {
     if (!main_document_request(request)) return;
@@ -333,6 +397,11 @@ function install_initial_navigation_observers(
       redaction_values,
       2_000,
     );
+    push_browser_event(state, "main-document-failed", {
+      url: redact_browser_text(request.url(), redaction_values, 2_000),
+      detail: state.mainDocumentFailure,
+      initiator: "UNKNOWN",
+    });
   });
 }
 
@@ -341,8 +410,26 @@ function capture_main_document_response(
   state: BrowserObservationState,
 ): void {
   state.mainDocumentReceived = true;
+  state.responseHeadersReceived = true;
   state.mainDocumentStatus = response.status();
   state.mainDocumentStatusText = response.statusText().slice(0, 200);
+  state.committedUrl = redact_browser_text(response.url(), state.redactionValues, 2_000);
+  state.connectionEstablished = true;
+  push_browser_event(state, "main-document-response", {
+    url: redact_browser_text(response.url(), state.redactionValues, 2_000),
+    status: response.status(),
+    initiator: "DESTINATION",
+  });
+}
+
+async function capture_transport_evidence(response: Response, state: BrowserObservationState): Promise<void> {
+  try {
+    const [server, security] = await Promise.all([response.serverAddr(), response.securityDetails()]);
+    if (server) state.connectionEstablished = true;
+    if (security) state.tlsEstablished = true;
+  } catch {
+    // Transport details are optional evidence and must never alter navigation.
+  }
 }
 
 async function inspect_loaded_page(
@@ -385,8 +472,11 @@ async function inspect_loaded_page(
       meaningfulContent: meaningful,
       accessRestrictionIndicators: restriction_indicators,
     };
-  } catch {
-    return empty_content_evidence();
+  } catch (error) {
+    return {
+      ...empty_content_evidence(),
+      inspectionError: redact_browser_text(describe_error(error), redaction_values, 2_000),
+    };
   }
 }
 
@@ -421,6 +511,9 @@ function browser_health(
     contextClosedObserved: state.contextClosedObserved,
     pageCrashObserved: state.pageCrashObserved,
     pageCloseObserved: state.pageCloseObserved,
+    ...(state.browserCloseInitiator ? { browserDisconnectInitiator: state.browserCloseInitiator } : {}),
+    ...(state.contextCloseInitiator ? { contextCloseInitiator: state.contextCloseInitiator } : {}),
+    ...(state.pageCloseInitiator ? { pageCloseInitiator: state.pageCloseInitiator } : {}),
   };
 }
 
@@ -441,10 +534,11 @@ function create_browser_stage_result(input: {
   const memory = process.memoryUsage();
   const resource = process.resourceUsage();
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     entered: input.phase !== "PRE_BROWSER",
     outcome: input.outcome,
     originalUrl: redact_browser_text(input.originalUrl, input.redactionValues, 2_000),
+    normalizedUrl: redact_browser_text(normalize_diagnostic_url(input.originalUrl), input.redactionValues, 2_000),
     finalUrl: redact_browser_text(input.finalUrl, input.redactionValues, 2_000),
     startedAt: input.startedAt.toISOString(),
     finishedAt: new Date().toISOString(),
@@ -455,11 +549,26 @@ function create_browser_stage_result(input: {
     timeoutMs: NAVIGATION_TIMEOUT_MS,
     waitUntil: "domcontentloaded",
     redirectChain: input.state.redirectChain,
+    ...(input.state.committedUrl
+      ? { committedUrl: redact_browser_text(input.state.committedUrl, input.redactionValues, 2_000) }
+      : {}),
+    navigationStartedAt: input.state.navigationStartedAt ?? input.startedAt.toISOString(),
+    navigationFinishedAt: input.state.navigationFinishedAt ?? new Date().toISOString(),
+    ...(input.state.lastProgressAt ? { lastProgressAt: input.state.lastProgressAt } : {}),
+    ...(input.state.lastProgressType ? { lastProgressType: input.state.lastProgressType } : {}),
+    ...(input.error && /timeout|timed out/i.test(describe_error(input.error))
+      ? { timeoutSource: "PLAYWRIGHT_NAVIGATION" as const }
+      : {}),
+    timeline: input.state.timeline,
     mainDocumentRequested: input.state.mainDocumentRequested,
     mainDocumentReceived: input.state.mainDocumentReceived,
     ...(input.state.mainDocumentStatus !== undefined ? { mainDocumentStatus: input.state.mainDocumentStatus } : {}),
     ...(input.state.mainDocumentStatusText ? { mainDocumentStatusText: input.state.mainDocumentStatusText } : {}),
     ...(input.state.mainDocumentFailure ? { mainDocumentFailure: input.state.mainDocumentFailure } : {}),
+    responseHeadersReceived: input.state.responseHeadersReceived,
+    ...(input.state.connectionEstablished !== undefined ? { connectionEstablished: input.state.connectionEstablished } : {}),
+    ...(input.state.tlsEstablished !== undefined ? { tlsEstablished: input.state.tlsEstablished } : {}),
+    transportEvidenceBasis: input.state.mainDocumentReceived ? "DIRECT" : "UNAVAILABLE",
     content: input.content,
     health: input.health,
     proxyConfigured: ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"].some((name) => Boolean(process.env[name])),
@@ -472,11 +581,57 @@ function create_browser_stage_result(input: {
       userCpuMicros: resource.userCPUTime,
       systemCpuMicros: resource.systemCPUTime,
     },
+    resourceSnapshots: input.state.resourceSnapshots,
     ...(input.runContext ? { runContext: input.runContext } : {}),
     evidence: [],
     contradictions: [],
+    missingEvidence: [],
     ...(input.error ? { error: normalize_browser_stage_error(input.error, input.redactionValues) } : {}),
   };
+}
+
+function normalize_diagnostic_url(value: string): string {
+  try {
+    return new URL(value).toString();
+  } catch {
+    return value;
+  }
+}
+
+function push_browser_event(
+  state: BrowserObservationState,
+  type: string,
+  detail: Partial<Omit<BrowserStageResult["timeline"][number], "sequence" | "at" | "elapsedMs" | "type">> = {},
+): void {
+  if (state.timeline.length >= 200) return;
+  const at = new Date().toISOString();
+  state.lastProgressAt = at;
+  state.lastProgressType = type;
+  if (!state.detailedDiagnosticsEnabled) return;
+  state.timeline.push({
+    sequence: state.timeline.length + 1,
+    at,
+    elapsedMs: Number((performance.now() - state.observationStartedAt).toFixed(3)),
+    type,
+    ...detail,
+  });
+}
+
+function capture_resource_snapshot(
+  state: BrowserObservationState,
+  milestone: BrowserStageResult["resourceSnapshots"][number]["milestone"],
+): void {
+  if (!state.detailedDiagnosticsEnabled) return;
+  const memory = process.memoryUsage();
+  const resource = process.resourceUsage();
+  state.resourceSnapshots.push({
+    at: new Date().toISOString(),
+    milestone,
+    rssBytes: memory.rss,
+    heapUsedBytes: memory.heapUsed,
+    userCpuMicros: resource.userCPUTime,
+    systemCpuMicros: resource.systemCPUTime,
+  });
 }
 
 function browser_response_is_failure(

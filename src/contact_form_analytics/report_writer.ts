@@ -324,9 +324,10 @@ const siteCsv = (sites: SiteClassification[]): string =>
 
 const browserStageFiles = (sites: SiteClassification[]): OutputFiles => {
   const categories = [
-    "OUR_SYSTEM_FAILURE",
-    "DESTINATION_FAILURE",
+    "OUR_AUTOMATION",
+    "DESTINATION_WEBSITE",
     "ACCESS_RESTRICTION",
+    "NETWORK_INFRASTRUCTURE",
     "UNDETERMINED",
   ] as const;
   const rows = sites.map((site) => {
@@ -339,11 +340,11 @@ const browserStageFiles = (sites: SiteClassification[]): OutputFiles => {
     const category = explicit?.category || (
       inferredFailure
         ? site.attribution === "workflow_attributable"
-          ? "OUR_SYSTEM_FAILURE"
+          ? "OUR_AUTOMATION"
           : site.attribution === "non_workflow_attributable"
             ? /access|antibot|captcha|http_40[13]|http_429/.test(site.subcategory)
               ? "ACCESS_RESTRICTION"
-              : "DESTINATION_FAILURE"
+              : "DESTINATION_WEBSITE"
             : "UNDETERMINED"
         : ""
     );
@@ -354,8 +355,8 @@ const browserStageFiles = (sites: SiteClassification[]): OutputFiles => {
       outcome,
       category,
       responsibleParty: explicit?.responsibleParty || (
-        category === "OUR_SYSTEM_FAILURE" ? "OUR_SYSTEM" :
-        category === "DESTINATION_FAILURE" ? "DESTINATION" : "UNKNOWN"
+        category === "OUR_AUTOMATION" ? "OUR_AUTOMATION" :
+        category === "DESTINATION_WEBSITE" ? "DESTINATION_WEBSITE" : "UNKNOWN"
       ),
       subcategory: explicit?.subcategory || site.subcategory,
       confidence: explicit?.confidence || (inferredFailure ? "LOW" : ""),
@@ -369,6 +370,13 @@ const browserStageFiles = (sites: SiteClassification[]): OutputFiles => {
       reason: explicit?.reason || site.primaryCause,
       artifactPath: explicit?.artifactPath || "",
       evidenceSource: explicit?.source || site.evidenceBasis,
+      classificationBasis: explicit?.classificationBasis || (inferredFailure ? "INFERRED" : ""),
+      strongestSupportingEvidence: explicit?.strongestSupportingEvidence || site.evidenceSummary,
+      strongestEvidenceAgainst: explicit?.strongestEvidenceAgainst || "",
+      missingEvidence: explicit?.missingEvidence ?? [],
+      timeoutSource: explicit?.timeoutSource || "",
+      lastProgressAt: explicit?.lastProgressAt || "",
+      lastProgressType: explicit?.lastProgressType || "",
     };
   });
   const ledger = rows.filter((row) => row.outcome === "FAILED");
@@ -398,8 +406,15 @@ const browserStageFiles = (sites: SiteClassification[]): OutputFiles => {
         ledger.filter((row) => (row.subcategory || "unknown_browser_failure") === subcategory).length,
       ]),
   );
+  const ourAutomationSubcategoryCounts = Object.fromEntries(
+    [...new Set(ledger.filter((row) => row.category === "OUR_AUTOMATION").map((row) => row.subcategory || "unknown_automation_failure"))]
+      .sort()
+      .map((subcategory) => [subcategory, ledger.filter((row) =>
+        row.category === "OUR_AUTOMATION" && (row.subcategory || "unknown_automation_failure") === subcategory
+      ).length]),
+  );
   const summary = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     totalWebsites: sites.length,
     entered,
     loaded,
@@ -410,6 +425,7 @@ const browserStageFiles = (sites: SiteClassification[]): OutputFiles => {
     categoryPercentagesOfFailures,
     categoryPercentagesOfEntrants,
     subcategoryCounts,
+    ourAutomationSubcategoryCounts,
     ledger,
     preBrowserExclusions: rows
       .filter((row) => !row.entered)
@@ -442,6 +458,11 @@ const browserStageFiles = (sites: SiteClassification[]): OutputFiles => {
       ? ["none"]
       : Object.entries(subcategoryCounts).map(([subcategory, count]) => `${subcategory}: ${count}`)),
     "",
+    "OUR AUTOMATION BREAKDOWN",
+    ...(Object.keys(ourAutomationSubcategoryCounts).length === 0
+      ? ["none"]
+      : Object.entries(ourAutomationSubcategoryCounts).map(([subcategory, count]) => `${subcategory}: ${count}`)),
+    "",
     "RECONCILIATION",
     `Entrants equal loaded plus failures: ${summary.reconciliation.entrantsEqualLoadedPlusFailures ? "yes" : "NO"}`,
     `Failures equal category sum: ${summary.reconciliation.failuresEqualCategorySum ? "yes" : "NO"}`,
@@ -453,20 +474,32 @@ const browserStageFiles = (sites: SiteClassification[]): OutputFiles => {
     [
       "site_id", "website_url", "category", "responsible_party", "subcategory", "confidence", "rule_id",
       "phase", "operation", "duration_ms", "main_document_received", "main_document_status",
-      "meaningful_content", "reason", "artifact_path", "evidence_source",
+      "meaningful_content", "reason", "artifact_path", "evidence_source", "classification_basis",
+      "strongest_supporting_evidence", "strongest_evidence_against", "missing_evidence", "timeout_source",
+      "last_progress_at", "last_progress_type",
     ],
     ledger.map((row) => [
       row.siteId, row.websiteUrl, row.category, row.responsibleParty, row.subcategory, row.confidence, row.ruleId,
       row.phase, row.operation, row.durationMs ?? "", row.mainDocumentReceived ?? "",
       row.mainDocumentStatus ?? "", row.meaningfulContent ?? "", row.reason, row.artifactPath,
       row.evidenceSource,
+      row.classificationBasis, row.strongestSupportingEvidence, row.strongestEvidenceAgainst,
+      row.missingEvidence.join(" | "), row.timeoutSource, row.lastProgressAt, row.lastProgressType,
     ]),
   );
-  return {
+  const files: OutputFiles = {
     "browser-stage-summary.json": `${JSON.stringify(summary, null, 2)}\n`,
     "browser-stage-summary.txt": `${text}\r\n`,
     "browser-stage-failures.csv": failureCsv,
   };
+  for (const category of categories) {
+    const categoryRows = ledger.filter((row) => row.category === category);
+    files[`browser-stage-${category.toLowerCase().replaceAll("_", "-")}.csv`] = csv(
+      ["site_id", "website_url", "subcategory", "confidence", "rule_id", "reason", "classification_basis", "strongest_supporting_evidence", "strongest_evidence_against", "missing_evidence", "artifact_path"],
+      categoryRows.map((row) => [row.siteId, row.websiteUrl, row.subcategory, row.confidence, row.ruleId, row.reason, row.classificationBasis, row.strongestSupportingEvidence, row.strongestEvidenceAgainst, row.missingEvidence.join(" | "), row.artifactPath]),
+    );
+  }
+  return files;
 };
 
 const errorsCsv = (errors: AnalyticsError[]): string =>
