@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
+import { gunzipSync } from "node:zlib";
 import type { Page } from "playwright";
 import {
   resolve_cli_options,
@@ -103,6 +104,27 @@ test("deep-debug recorder and workflow artifacts", async (context) => {
     assert.match(text, /redacted-contact-value/);
   });
 
+  await context.test("retains the plain timeline when gzip finalization fails", async () => {
+    const recorder = await create_deep_debug_context({
+      outputPath: join(temporary_directory, "compression-fallback", "result.txt"),
+      targetUrl: "https://compression-fallback.example.test/",
+      engine: "playwright",
+      redactionValues: [],
+    });
+    recorder.record({
+      stage: "orchestrator",
+      substage: "test",
+      operation: "preserve-on-compression-failure",
+      outcome: "observed",
+    });
+    await mkdir(join(recorder.artifactDirectory, "timeline.jsonl.gz"));
+
+    const summary = await recorder.finalize({});
+    assert.equal(summary.timelinePath.endsWith("timeline.jsonl"), true);
+    assert.equal(summary.artifactErrorCount, 1);
+    assert.match(await read_timeline(summary.timelinePath), /preserve-on-compression-failure/);
+  });
+
   await context.test("captures successful population, handoff, submit, DOM, and confirmation evidence", async () => {
     const outcome = await run_deep_debug("/success", "success");
     assert.equal(outcome.status, "SUCCESS", JSON.stringify(outcome));
@@ -111,7 +133,26 @@ test("deep-debug recorder and workflow artifacts", async (context) => {
     assert.ok(outcome.deepDebug);
     assert.equal(outcome.deepDebug.artifactErrorCount, 0);
 
-    const timeline = await readFile(outcome.deepDebug.timelinePath, "utf8");
+    const timeline = await read_timeline(outcome.deepDebug.timelinePath);
+    assert.equal(outcome.deepDebug.timelinePath.endsWith("timeline.jsonl.gz"), true);
+    const artifact_files = await list_files(outcome.deepDebug.artifactDirectory);
+    assert.equal(artifact_files.some((file) => /[\\/]events\.jsonl$/i.test(file)), false);
+    assert.equal(artifact_files.some((file) => /[\\/]network\.jsonl$/i.test(file)), false);
+    const manifest = JSON.parse(
+      await readFile(outcome.deepDebug.manifestPath, "utf8"),
+    ) as { artifacts: Array<{ path: string }> };
+    assert.equal(
+      manifest.artifacts.some((artifact) => artifact.path === "timeline.jsonl.gz"),
+      true,
+    );
+    assert.equal(
+      manifest.artifacts.some((artifact) => /(?:events|network)\.jsonl$/i.test(artifact.path)),
+      false,
+    );
+    assert.match(
+      await readFile(outcome.deepDebug.summaryPath, "utf8"),
+      /Start with timeline\.jsonl\.gz/,
+    );
     assert.match(timeline, /population-completed/);
     assert.match(timeline, /population-to-submission-handoff/);
     assert.match(timeline, /prepare-submit-control/);
@@ -153,7 +194,7 @@ test("deep-debug recorder and workflow artifacts", async (context) => {
 
     await assert.rejects(discover_contact_routes(page, { timeoutMs: 25, deepDebug: recorder }));
     const summary = await recorder.finalize({ failure: "Contact-link scanning timed out after 25 ms." });
-    const timeline = await readFile(summary.timelinePath, "utf8");
+    const timeline = await read_timeline(summary.timelinePath);
     assert.match(timeline, /"operation":"scan-contact-links","outcome":"failed"/);
     assert.match(timeline, /"frameUrl":"https:\/\/hung\.example\.test\/frame"/);
     assert.match(timeline, /"timeoutMs":25/);
@@ -164,7 +205,7 @@ test("deep-debug recorder and workflow artifacts", async (context) => {
     const outcome = await run_deep_debug("/validation", "validation");
     assert.equal(outcome.failureKind, "submission.validation", JSON.stringify(outcome));
     assert.equal(outcome.submissionAttempted, false);
-    const timeline = await readFile(outcome.deepDebug!.timelinePath, "utf8");
+    const timeline = await read_timeline(outcome.deepDebug!.timelinePath);
     assert.match(timeline, /assess-effective-native-validity/);
     assert.match(timeline, /deterministic-population-recovery/);
     assert.equal(
@@ -321,7 +362,7 @@ test("deep-debug recorder and workflow artifacts", async (context) => {
     const missing = await run_deep_debug("/remove-submit", "remove-submit");
     assert.equal(missing.failureKind, "submission.no_control", JSON.stringify(missing));
     assert.match(
-      await readFile(missing.deepDebug!.timelinePath, "utf8"),
+      await read_timeline(missing.deepDebug!.timelinePath),
       /no enabled submit control was found/,
     );
     await assert_image_artifacts(
@@ -331,7 +372,7 @@ test("deep-debug recorder and workflow artifacts", async (context) => {
 
     const obstructed = await run_deep_debug("/overlay", "overlay");
     assert.equal(obstructed.failureKind, "submission.preflight", JSON.stringify(obstructed));
-    const timeline = await readFile(obstructed.deepDebug!.timelinePath, "utf8");
+    const timeline = await read_timeline(obstructed.deepDebug!.timelinePath);
     assert.match(timeline, /preflight-hit-test/);
     assert.match(timeline, /intercepted the submit control/);
     await assert_image_artifacts(
@@ -343,9 +384,8 @@ test("deep-debug recorder and workflow artifacts", async (context) => {
   await context.test("captures unconfirmed and passive-CAPTCHA outcomes without a second submit", async () => {
     const unconfirmed = await run_deep_debug("/unconfirmed", "unconfirmed");
     assert.equal(unconfirmed.failureKind, "submission.inconclusive", JSON.stringify(unconfirmed));
-    const unconfirmed_timeline = await readFile(
+    const unconfirmed_timeline = await read_timeline(
       unconfirmed.deepDebug!.timelinePath,
-      "utf8",
     );
     assert.equal(count_occurrences(unconfirmed_timeline, '"operation":"activate-submit-control","outcome":"started"'), 1);
     assert.match(unconfirmed_timeline, /deterministic-evidence/);
@@ -410,7 +450,7 @@ test("deep-debug recorder and workflow artifacts", async (context) => {
       assert_no_contact_values(artifacts);
       assert.equal(
         count_occurrences(
-          await readFile(outcome.deepDebug!.timelinePath, "utf8"),
+          await read_timeline(outcome.deepDebug!.timelinePath),
           '"operation":"activate-submit-control","outcome":"started"',
         ),
         1,
@@ -542,8 +582,15 @@ function page_for_path(path: string): string {
 
 async function read_text_artifacts(directory: string): Promise<string> {
   const files = await list_files(directory);
-  const text_files = files.filter((file) => /\.(?:json|jsonl|txt)$/i.test(file));
-  return (await Promise.all(text_files.map((file) => readFile(file, "utf8")))).join("\n");
+  const text_files = files.filter((file) => /\.(?:json|jsonl|txt)$/i.test(file) || /\.jsonl\.gz$/i.test(file));
+  return (await Promise.all(text_files.map((file) =>
+    /\.gz$/i.test(file) ? read_timeline(file) : readFile(file, "utf8")
+  ))).join("\n");
+}
+
+async function read_timeline(file: string): Promise<string> {
+  const content = await readFile(file);
+  return file.endsWith(".gz") ? gunzipSync(content).toString("utf8") : content.toString("utf8");
 }
 
 async function list_files(directory: string): Promise<string[]> {
@@ -569,7 +616,9 @@ async function assert_image_artifacts(
   );
   assert.equal(images.some((file) => /\.png$/i.test(file)), false);
 
-  const timeline = await readFile(join(directory, "timeline.jsonl"), "utf8");
+  const timeline_file = files.find((file) => /[\\/]timeline\.jsonl(?:\.gz)?$/i.test(file));
+  assert.ok(timeline_file);
+  const timeline = await read_timeline(timeline_file);
   const recorded_paths = timeline.trim().split(/\r?\n/).map(
     (line) => JSON.parse(line) as { data?: { path?: string } },
   ).map((event) => event.data?.path).filter(

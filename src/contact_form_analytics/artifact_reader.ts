@@ -1,5 +1,7 @@
 import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
+import { read_deep_debug_stage_events } from
+  "../contact_outreach_workflow/shared_files_orchestrator/deep_debug_timeline_(Support).js";
 import type {
   AnalyticsError,
   BrowserStageArtifactEvidence,
@@ -838,9 +840,12 @@ const readSite = async (runPath: string, directoryName: string): Promise<SiteEvi
     }
     if (resolvedDebug.directory) {
       const submissionDebugPath = path.join(resolvedDebug.directory, "submission-debug.json");
-      const confirmationEventsPath = path.join(resolvedDebug.directory, "confirmation", "events.jsonl");
       submissionSignals.debugArtifactAvailable = await existingFile(submissionDebugPath);
-      submissionSignals.confirmationEventsAvailable = await existingFile(confirmationEventsPath);
+      const confirmationEvents = await read_deep_debug_stage_events(
+        resolvedDebug.directory,
+        "confirmation",
+      ).catch(() => undefined);
+      submissionSignals.confirmationEventsAvailable = confirmationEvents !== undefined;
       if (submissionSignals.debugArtifactAvailable) {
         const submissionDebugText = await readTextSafe(submissionDebugPath);
         try {
@@ -869,13 +874,15 @@ const readSite = async (runPath: string, directoryName: string): Promise<SiteEvi
         }
         sourcePaths.push(submissionDebugPath);
       }
-      if (submissionSignals.confirmationEventsAvailable) {
-        const eventText = await readTextSafe(confirmationEventsPath);
+      if (confirmationEvents) {
+        const eventText = confirmationEvents.text.length > MAX_TEXT_BYTES
+          ? confirmationEvents.text.slice(0, MAX_TEXT_BYTES)
+          : confirmationEvents.text;
         const parsedMessages = parseDebugMessageSignals(eventText);
         submissionSignals.messageSignals = parsedMessages.signals;
         submissionSignals.debugArtifactMalformed =
           submissionSignals.debugArtifactMalformed || parsedMessages.malformed;
-        sourcePaths.push(confirmationEventsPath);
+        sourcePaths.push(confirmationEvents.path);
         if (parsedMessages.malformed) {
           errors.push(
             makeError(
@@ -883,7 +890,7 @@ const readSite = async (runPath: string, directoryName: string): Promise<SiteEvi
               "warning",
               "malformed_signal_debug_artifact",
               "At least one confirmation event could not be parsed; valid events were retained.",
-              confirmationEventsPath,
+              confirmationEvents.path,
             ),
           );
         }

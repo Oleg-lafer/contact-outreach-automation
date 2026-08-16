@@ -1,12 +1,18 @@
 import { createHash, randomBytes } from "node:crypto";
+import { createReadStream, createWriteStream } from "node:fs";
 import {
   appendFile,
   mkdir,
   readdir,
+  rename,
+  rm,
   stat,
+  unlink,
   writeFile,
 } from "node:fs/promises";
 import { dirname, extname, join, resolve } from "node:path";
+import { pipeline } from "node:stream/promises";
+import { createGzip } from "node:zlib";
 import type { Locator, Page } from "playwright";
 import { with_masked_page_values } from "../../../shared_files_orchestrator/page_value_redaction_(Integration).js";
 import type {
@@ -61,6 +67,7 @@ export async function create_deep_debug_context(
 
   const manifest_path = join(artifact_directory, "manifest.json");
   const timeline_path = join(artifact_directory, "timeline.jsonl");
+  const compressed_timeline_path = `${timeline_path}.gz`;
   const summary_path = join(artifact_directory, "summary.txt");
   const started_at = new Date().toISOString();
   const monotonic_started_at = performance.now();
@@ -211,10 +218,6 @@ export async function create_deep_debug_context(
     });
     const line = `${JSON.stringify(event)}\n`;
     queue_append("timeline.jsonl", line);
-    queue_append(`${input.stage}/events.jsonl`, line);
-    if (input.stage === "runtime") {
-      queue_append(`runtime/${safe_filename(input.substage)}.jsonl`, line);
-    }
   };
 
   const write_json = async (
@@ -402,6 +405,12 @@ export async function create_deep_debug_context(
         operations: ai_operations,
       });
 
+      const final_timeline_path = await compress_timeline(
+        timeline_path,
+        compressed_timeline_path,
+        report_artifact_error,
+      );
+
       const finished_at = new Date().toISOString();
       const outcome_record = sanitize(input.outcome ?? null) as Record<string, unknown> | null;
       const summary_lines = build_summary_lines({
@@ -413,6 +422,7 @@ export async function create_deep_debug_context(
         ...(input.failure ? { failure: sanitize_text(input.failure) } : {}),
         counters,
         artifactErrors: artifact_errors,
+        timelinePath: final_timeline_path,
       });
       try {
         await writeFile(summary_path, `${summary_lines.join("\n")}\n`, "utf8");
@@ -467,7 +477,7 @@ export async function create_deep_debug_context(
         runId: run_id,
         artifactDirectory: artifact_directory,
         manifestPath: manifest_path,
-        timelinePath: timeline_path,
+        timelinePath: final_timeline_path,
         summaryPath: summary_path,
         eventCount: counters.timelineEvents,
         artifactErrorCount: artifact_errors.length,
@@ -703,6 +713,7 @@ function build_summary_lines(input: {
   failure?: string;
   counters: Counters;
   artifactErrors: ArtifactError[];
+  timelinePath: string;
 }): string[] {
   return [
     "DEEP POPULATION-TO-SUBMISSION DEBUG",
@@ -723,8 +734,30 @@ function build_summary_lines(input: {
     `Artifact errors: ${input.artifactErrors.length}`,
     `Artifact directory: ${input.artifactDirectory}`,
     "",
-    "Start with timeline.jsonl, then inspect handoff/, population/, and submission/.",
+    `Start with ${input.timelinePath.endsWith(".gz") ? "timeline.jsonl.gz" : "timeline.jsonl"}, then inspect handoff/, population/, and submission/.`,
   ];
+}
+
+async function compress_timeline(
+  timeline_path: string,
+  compressed_timeline_path: string,
+  report_error: (operation: string, error: unknown, path?: string) => void,
+): Promise<string> {
+  const temporary_path = `${compressed_timeline_path}.tmp`;
+  try {
+    await pipeline(
+      createReadStream(timeline_path),
+      createGzip(),
+      createWriteStream(temporary_path, { flags: "wx" }),
+    );
+    await rename(temporary_path, compressed_timeline_path);
+    await unlink(timeline_path);
+    return compressed_timeline_path;
+  } catch (error) {
+    report_error("compressTimeline", error, compressed_timeline_path);
+    await rm(temporary_path, { force: true }).catch(() => undefined);
+    return timeline_path;
+  }
 }
 
 async function collect_artifact_inventory(

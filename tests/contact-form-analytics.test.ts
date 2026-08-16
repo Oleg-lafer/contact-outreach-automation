@@ -3,6 +3,7 @@ import { mkdtemp, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { gzipSync } from "node:zlib";
 import { analyzeRun } from "../src/contact_form_analytics/contact_form_run_analyzer.js";
 import {
   buildSignalDashboardData,
@@ -156,17 +157,31 @@ const writeConfirmationEvents = async (
   debugDirectory: string,
   event: Record<string, unknown>,
   malformedLine = false,
+  format: "legacy" | "gzip" = "legacy",
 ): Promise<void> => {
-  await mkdir(path.join(debugDirectory, "confirmation"), { recursive: true });
+  await mkdir(
+    format === "legacy" ? path.join(debugDirectory, "confirmation") : debugDirectory,
+    { recursive: true },
+  );
   await writeFile(path.join(debugDirectory, "submission-debug.json"), "{}");
-  await writeFile(
-    path.join(debugDirectory, "confirmation", "events.jsonl"),
-    `${JSON.stringify({
+  const confirmationLine = JSON.stringify({
       stage: "confirmation",
       operation: "wait-for-submission-confirmation",
       data: event,
-    })}\n${malformedLine ? "{bad-json\n" : ""}`,
-  );
+    });
+  if (format === "gzip") {
+    const timeline = [
+      JSON.stringify({ stage: "runtime", operation: "unrelated-runtime-event" }),
+      confirmationLine,
+      ...(malformedLine ? ["{bad-json"] : []),
+    ].join("\n") + "\n";
+    await writeFile(path.join(debugDirectory, "timeline.jsonl.gz"), gzipSync(timeline));
+  } else {
+    await writeFile(
+      path.join(debugDirectory, "confirmation", "events.jsonl"),
+      `${confirmationLine}\n${malformedLine ? "{bad-json\n" : ""}`,
+    );
+  }
 };
 
 test("deep-debug report is accepted as a full primary artifact", async () => {
@@ -371,7 +386,7 @@ test("submission signal analytics are multi-label, strict about negatives, and d
       { text: "  Thank you!   Your message was received.  " },
       { text: "Thank you! Your message was received." },
     ],
-  });
+  }, false, "gzip");
 
   const contradictoryDirectory = path.join(runPath, "002", "deep-debug", "contradictory");
   await writeSignalFull(runPath, 2, {
