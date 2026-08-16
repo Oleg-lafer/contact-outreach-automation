@@ -2,7 +2,6 @@ import { writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { Page } from "playwright";
 import type { SubmissionDebugSummary } from "../../shared_files_forms/forms_types_(Support).js";
-import { with_masked_page_values } from "../../../../shared_files_orchestrator/page_value_redaction_(Integration).js";
 import type {
   ButtonControlDebugInfo,
   FinalizeSubmissionDebugInput,
@@ -19,9 +18,6 @@ import {
  * TOP LEVEL WORKFLOW:
  *
  * create_submission_debug_context(options)
- *        |
- *        v
- * safe_page_screenshot(page, path)
  *        |
  *        v
  * collect_visible_message_candidates(page)
@@ -62,12 +58,6 @@ export function create_submission_debug_context(
     networkPath: join(absolute_artifact_directory, "network.json"),
     buttonAuditPath: join(absolute_artifact_directory, "button-audit.json"),
     submitCandidatesPath: join(absolute_artifact_directory, "submit-candidates.json"),
-    beforeSubmitScreenshotPath: join(absolute_artifact_directory, "before-submit.png"),
-    afterSubmit2sScreenshotPath: join(absolute_artifact_directory, "after-submit-2s.png"),
-    afterConfirmationWaitScreenshotPath: join(
-      absolute_artifact_directory,
-      "after-confirmation-wait.png",
-    ),
   };
 }
 
@@ -188,19 +178,9 @@ export async function finalize_submission_debug({
     return undefined;
   }
 
-  await safe_page_screenshot(
-    page,
-    debugContext.afterConfirmationWaitScreenshotPath,
-    redactionValues,
-  );
   const url_after_submission = page.url();
   const debug_document = {
     artifactDirectory: debugContext.artifactDirectory,
-    screenshots: {
-      beforeSubmit: "before-submit.png",
-      afterSubmit2s: "after-submit-2s.png",
-      afterConfirmationWait: "after-confirmation-wait.png",
-    },
     submitControl: submitControl ?? null,
     submitDispatch: {
       verifiedTarget: verifiedSubmitTarget,
@@ -407,22 +387,9 @@ function summarize_hit_test_receiver(receiver: {
  * STEP_LEVEL_HELPER_FUNCTIONS
  * ========================================================================
  *
- * safe_page_screenshot(...)       - Capture screenshots without failing workflow.
  * dedupe_message_candidates(...)  - Remove duplicate visible messages.
  * ========================================================================
  */
-
-export async function safe_page_screenshot(
-  page: Page,
-  path: string,
-  redaction_values: string[] = [],
-): Promise<void> {
-  await with_masked_page_values(
-    page,
-    redaction_values,
-    () => page.screenshot({ path, fullPage: true, animations: "disabled" }),
-  ).catch(() => undefined);
-}
 
 function dedupe_message_candidates(
   candidates: MessageCandidateDebugInfo[],

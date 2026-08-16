@@ -64,8 +64,12 @@ export interface DeepDebugContext {
   }): Promise<unknown | undefined>;
   captureScreenshot(
     page: Page,
-    stage: "population" | "handoff" | "submission" | "confirmation",
+    stage: DeepDebugStage,
     label: string,
+    options?: {
+      fullPage?: boolean | undefined;
+      locator?: Locator | undefined;
+    },
   ): Promise<string | undefined>;
   attachPage(page: Page): Promise<void>;
   recordAiOperations(

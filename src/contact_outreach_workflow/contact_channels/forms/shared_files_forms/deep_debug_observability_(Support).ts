@@ -24,7 +24,8 @@ const MAX_TIMELINE_EVENTS = 100_000;
 const MAX_NETWORK_EVENTS = 25_000;
 const MAX_MUTATION_EVENTS = 20_000;
 const MAX_CONTROLS_PER_SNAPSHOT = 500;
-const MAX_SCREENSHOTS = 30;
+const MAX_SCREENSHOTS = 1;
+const SCREENSHOT_JPEG_QUALITY = 70;
 const MAX_TEXT_LENGTH = 4_000;
 
 interface ArtifactError {
@@ -292,7 +293,7 @@ export async function create_deep_debug_context(
         return undefined;
       }
     },
-    captureScreenshot: async (page, stage, label) => {
+    captureScreenshot: async (page, stage, label, options = {}) => {
       if (counters.screenshots >= MAX_SCREENSHOTS) {
         counters.droppedScreenshots += 1;
         record({
@@ -304,25 +305,44 @@ export async function create_deep_debug_context(
         });
         return undefined;
       }
-      counters.screenshots += 1;
-      const relative_path = `${stage}/screenshots/${safe_filename(label)}.png`;
+      const relative_path = `${stage}/screenshots/${safe_filename(label)}.jpeg`;
       const absolute_path = join(artifact_directory, relative_path);
       try {
         await set_browser_instrumentation_paused(page, true);
         await mkdir(dirname(absolute_path), { recursive: true });
         await with_masked_page_values(page, redaction_values, () =>
-          page.screenshot({
-            path: absolute_path,
-            fullPage: true,
-            animations: "disabled",
-          }),
+          options.locator
+            ? options.locator.screenshot({
+                path: absolute_path,
+                type: "jpeg",
+                quality: SCREENSHOT_JPEG_QUALITY,
+                animations: "disabled",
+              })
+            : page.screenshot({
+                path: absolute_path,
+                type: "jpeg",
+                quality: SCREENSHOT_JPEG_QUALITY,
+                fullPage: options.fullPage ?? false,
+                animations: "disabled",
+              }),
         );
+        counters.screenshots += 1;
         record({
           stage,
           substage: "screenshot",
           operation: label,
           outcome: "succeeded",
-          data: { path: absolute_path, contactValuesMasked: true },
+          data: {
+            path: absolute_path,
+            contactValuesMasked: true,
+            format: "jpeg",
+            quality: SCREENSHOT_JPEG_QUALITY,
+            scope: options.locator
+              ? "locator"
+              : options.fullPage
+                ? "full-page"
+                : "viewport",
+          },
         });
         return absolute_path;
       } catch (error) {

@@ -123,6 +123,16 @@ test("deep-debug recorder and workflow artifacts", async (context) => {
     assert.match(timeline, /"operation":"scan-frame-links","outcome":"succeeded"/);
     assert_chronological(timeline);
     assert_no_contact_values(await read_text_artifacts(outcome.deepDebug.artifactDirectory));
+    await assert_image_artifacts(outcome.deepDebug.artifactDirectory, []);
+  });
+
+  await context.test("retains one JPEG for discovery failures", async () => {
+    const discovery = await run_deep_debug("/no-form", "no-form");
+    assert.equal(discovery.status, "FAILED", JSON.stringify(discovery));
+    await assert_image_artifacts(
+      discovery.deepDebug!.artifactDirectory,
+      ["discovery-failure.jpeg"],
+    );
   });
 
   await context.test("finalizes focused contact-route timeout evidence", async () => {
@@ -189,6 +199,10 @@ test("deep-debug recorder and workflow artifacts", async (context) => {
     assert.match(
       await read_text_artifacts(outcome.deepDebug!.artifactDirectory),
       /"valueMissing": true/,
+    );
+    await assert_image_artifacts(
+      outcome.deepDebug!.artifactDirectory,
+      ["pre-submit.jpeg"],
     );
   });
 
@@ -310,12 +324,20 @@ test("deep-debug recorder and workflow artifacts", async (context) => {
       await readFile(missing.deepDebug!.timelinePath, "utf8"),
       /no enabled submit control was found/,
     );
+    await assert_image_artifacts(
+      missing.deepDebug!.artifactDirectory,
+      ["pre-submit.jpeg"],
+    );
 
     const obstructed = await run_deep_debug("/overlay", "overlay");
     assert.equal(obstructed.failureKind, "submission.preflight", JSON.stringify(obstructed));
     const timeline = await readFile(obstructed.deepDebug!.timelinePath, "utf8");
     assert.match(timeline, /preflight-hit-test/);
     assert.match(timeline, /intercepted the submit control/);
+    await assert_image_artifacts(
+      obstructed.deepDebug!.artifactDirectory,
+      ["pre-submit.jpeg"],
+    );
   });
 
   await context.test("captures unconfirmed and passive-CAPTCHA outcomes without a second submit", async () => {
@@ -327,11 +349,16 @@ test("deep-debug recorder and workflow artifacts", async (context) => {
     );
     assert.equal(count_occurrences(unconfirmed_timeline, '"operation":"activate-submit-control","outcome":"started"'), 1);
     assert.match(unconfirmed_timeline, /deterministic-evidence/);
+    await assert_image_artifacts(
+      unconfirmed.deepDebug!.artifactDirectory,
+      ["terminal-state.jpeg"],
+    );
 
     const captcha = await run_deep_debug("/passive-captcha", "passive-captcha");
     assert.equal(captcha.status, "SUCCESS", JSON.stringify(captcha));
     assert.equal(captcha.submissionConfirmed, true);
     assert.equal(captcha.submissionDebug?.captchaBlocked, false);
+    await assert_image_artifacts(captcha.deepDebug!.artifactDirectory, []);
   });
 
   await context.test("keeps rejection, contradiction, and artifacts in agreement", async () => {
@@ -362,6 +389,11 @@ test("deep-debug recorder and workflow artifacts", async (context) => {
       assert.equal(contradictory.signalEvaluation.hasPositiveSignals, true);
       assert.equal(contradictory.signalEvaluation.hasNegativeSignals, true);
     }
+    await assert_image_artifacts(rejected.deepDebug!.artifactDirectory, []);
+    await assert_image_artifacts(
+      contradictory.deepDebug!.artifactDirectory,
+      ["terminal-state.jpeg"],
+    );
 
     for (const outcome of [rejected, contradictory]) {
       const artifacts = await read_text_artifacts(
@@ -424,6 +456,9 @@ async function run_deep_debug(path: string, name: string) {
 }
 
 function page_for_path(path: string): string {
+  if (path === "/no-form") {
+    return "<!doctype html><html><body><main><h1>Company information</h1><p>No contact form is available.</p></main></body></html>";
+  }
   if (path === "/hebrew-success") {
     return `<!doctype html><html dir="rtl"><body><main><h1>צור קשר</h1>
       <form id="contact">
@@ -520,6 +555,31 @@ async function list_files(directory: string): Promise<string[]> {
     if (entry.isFile()) files.push(path);
   }
   return files;
+}
+
+async function assert_image_artifacts(
+  directory: string,
+  expected_names: string[],
+): Promise<void> {
+  const files = await list_files(directory);
+  const images = files.filter((file) => /\.(?:jpeg|png)$/i.test(file));
+  assert.deepEqual(
+    images.map((file) => file.replaceAll("\\", "/").split("/").at(-1)).sort(),
+    [...expected_names].sort(),
+  );
+  assert.equal(images.some((file) => /\.png$/i.test(file)), false);
+
+  const timeline = await readFile(join(directory, "timeline.jsonl"), "utf8");
+  const recorded_paths = timeline.trim().split(/\r?\n/).map(
+    (line) => JSON.parse(line) as { data?: { path?: string } },
+  ).map((event) => event.data?.path).filter(
+    (path): path is string => typeof path === "string",
+  );
+  for (const image of images) {
+    const bytes = await readFile(image);
+    assert.deepEqual([...bytes.subarray(0, 3)], [0xff, 0xd8, 0xff]);
+    assert.equal(recorded_paths.includes(image), true);
+  }
 }
 
 function assert_no_contact_values(value: string): void {
