@@ -1016,7 +1016,7 @@ test("Stagehand may retain a different complete form only as validated locator e
        <h1>Contact our project team</h1>
        <input type="email" name="email">${decoys}<button id="real-next" type="button">Continue</button>
      </form>
-     <form id="alternative"><h2>Send us a message</h2><textarea name="message"></textarea><button type="submit">Send</button></form>`,
+     <form id="alternative"><h2>Send us a message</h2><input type="email" name="email"><textarea name="message"></textarea><button type="submit">Send</button></form>`,
     async (page) => {
       const intelligence = new FakePageIntelligence({
         observe: (request) =>
@@ -1420,6 +1420,84 @@ test("population handoff rebinds a rerendered form and repopulates once", async 
         ),
         1,
       );
+    },
+  );
+});
+
+test("population rejects a message control that truncates the supplied message", async () => {
+  await with_page(
+    `<form><input type="email" name="email"><textarea name="message" maxlength="5"></textarea><button>Send</button></form>`,
+    async (page) => {
+      const result = await populate_contact_form(
+        contact_request(),
+        candidate_for(page, page.locator("form")),
+      );
+      assert.equal(result.submissionHandoff, undefined);
+      assert.equal(result.failureKind, "population.message_fill_failed");
+      assert.match(result.blockingReason ?? "", /complete supplied message/i);
+    },
+  );
+});
+
+test("population accepts a verified message with phone as the only contact method", async () => {
+  await with_page(
+    `<form><input type="tel" name="phone"><textarea name="message"></textarea><button>Send</button></form>`,
+    async (page) => {
+      const result = await populate_contact_form(
+        contact_request(),
+        candidate_for(page, page.locator("form")),
+      );
+      assert.equal(result.blockingReason, undefined, result.blockingReason);
+      assert.ok(result.submissionHandoff);
+      assert.deepEqual(result.populatedFields, ["phone", "message"]);
+    },
+  );
+});
+
+test("submission blocks when the verified message is lost and cannot be restored", async () => {
+  await with_page(
+    `<form id="contact"><input type="email" name="email"><textarea name="message"></textarea><button>Send</button></form>
+     <script>window.submitClicks = 0; document.querySelector('form').onsubmit = () => { window.submitClicks += 1; };</script>`,
+    async (page) => {
+      const candidate = candidate_for(page, page.locator("form"));
+      const population = await populate_contact_form(contact_request(), candidate);
+      assert.ok(population.submissionHandoff);
+      await page.locator("textarea").evaluate((control) => {
+        const field = control as HTMLTextAreaElement;
+        field.value = "";
+        field.readOnly = true;
+      });
+      const assessment = await submit_and_assess_contact_form(
+        { page, close: async () => undefined },
+        candidate,
+        { contactRequest: contact_request(), populationHandoff: population.submissionHandoff },
+      );
+      assert.equal(assessment.attempted, false);
+      assert.equal(assessment.failureKind, "submission.message_lost");
+      assert.equal(await page.evaluate(() => (window as unknown as { submitClicks: number }).submitClicks), 0);
+    },
+  );
+});
+
+test("submission blocks when its only verified contact method is lost", async () => {
+  await with_page(
+    `<form><input type="email" name="email"><textarea name="message"></textarea><button>Send</button></form>`,
+    async (page) => {
+      const candidate = candidate_for(page, page.locator("form"));
+      const population = await populate_contact_form(contact_request(), candidate);
+      assert.ok(population.submissionHandoff);
+      await page.locator('input[type="email"]').evaluate((control) => {
+        const field = control as HTMLInputElement;
+        field.value = "";
+        field.readOnly = true;
+      });
+      const assessment = await submit_and_assess_contact_form(
+        { page, close: async () => undefined },
+        candidate,
+        { contactRequest: contact_request(), populationHandoff: population.submissionHandoff },
+      );
+      assert.equal(assessment.attempted, false);
+      assert.equal(assessment.failureKind, "submission.contact_method_lost");
     },
   );
 });

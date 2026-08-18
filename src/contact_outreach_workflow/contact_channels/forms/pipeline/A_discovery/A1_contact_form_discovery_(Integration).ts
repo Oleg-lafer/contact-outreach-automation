@@ -115,6 +115,9 @@ function classify_discovery_failure_kind(
   if (/booking.only|booking|cross.origin/.test(reason)) {
     return "discovery.booking_only";
   }
+  if (/message field/.test(reason)) {
+    return "population.message_not_found";
+  }
   if (/rejected|newsletter|subscription|search|login|message field/.test(reason)) {
     return "discovery.rejected_form";
   }

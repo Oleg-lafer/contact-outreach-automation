@@ -4,9 +4,9 @@ import { normalize_bilingual_text } from "../../../shared_files_orchestrator/bil
 // Both groups are always active; these are semantic helpers, not a mode switch.
 const EN = {
   contact: String.raw`contact|support|help|get[ -]?in[ -]?touch|reach[ -]?us|inquir|enquir|book(?: a)? (?:call|consultation)|schedule(?: a)? (?:call|consultation)|consultation|start(?: a| your)? project|work with us|request(?: a)? (?:quote|proposal)|free audit|let['’]?s talk|talk to us|new business|hire us`,
-  message: String.raw`message|comment|inquiry|enquiry|details|description|additional information|questions?`,
-  email: String.raw`e-?mail`,
-  phone: String.raw`phone|mobile|telephone`,
+  message: String.raw`message|comments?|inquiry|enquiry|details|description|additional information|questions?|tell us|how can we help|project brief|requirements?|your needs|notes?`,
+  email: String.raw`e-?mail(?: address)?`,
+  phone: String.raw`phone|mobile|telephone|cell(?:phone)?|contact number|whats[ -]?app`,
   company: String.raw`company|organisation|organization|employer|business[ _-]?name|agency[ _-]?name`,
   role: String.raw`job[ _-]?title|job[ _-]?role|professional[ _-]?role|position|designation|occupation|(?:^|\s)role(?:\s|$)`,
   website: String.raw`web[ _-]?site|company[ _-]?url|business[ _-]?url|web[ _-]?address|domain`,

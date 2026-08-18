@@ -237,7 +237,7 @@ test("macro route discovery ranks and deduplicates only same-origin web routes",
   );
 });
 
-test("same-page inquiry anchors accept strong contact forms that offer no message", async () => {
+test("same-page inquiry anchors reject contact forms that offer no message", async () => {
   await with_local_page(
     `<a href="#consultation">Book a Call</a>
      <form id="consultation"><h2>Consultation</h2><input type="email" name="email"><input name="company"><button>Request a call</button></form>
@@ -247,14 +247,14 @@ test("same-page inquiry anchors accept strong contact forms that offer no messag
         { page, close: async () => undefined },
         page.url(),
       );
-      assert.ok(result.candidate, result.reason);
-      assert.equal(result.candidate.classification, "complete");
-      assert.equal(result.candidate.messageDisposition, "notOffered");
+      assert.equal(result.candidate, undefined);
+      assert.equal(result.failureKind, "population.message_not_found");
+      assert.match(result.reason ?? "", /message field/i);
     },
   );
 });
 
-test("a present but unresolved message-capable control remains blocking", async () => {
+test("a contenteditable message control is populated deterministically", async () => {
   await with_local_page(
     `<main><h1>Contact us</h1><form><input type="email" name="email"><input name="name"><div contenteditable="true" aria-label="Tell us"></div><button>Send</button></form></main>`,
     async (page) => {
@@ -267,8 +267,12 @@ test("a present but unresolved message-capable control remains blocking", async 
         { ...CONTACT_REQUEST, websiteUrl: page.url() },
         discovery.candidate,
       );
-      assert.equal(population.messageDisposition, "unresolved");
-      assert.match(population.blockingReason ?? "", /message field/i);
+      assert.equal(population.messageDisposition, "populated");
+      assert.equal(population.blockingReason, undefined);
+      assert.equal(
+        await page.locator('[contenteditable="true"]').textContent(),
+        CONTACT_REQUEST.message,
+      );
     },
   );
 });

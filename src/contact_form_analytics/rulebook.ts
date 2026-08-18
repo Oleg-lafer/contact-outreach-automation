@@ -623,7 +623,11 @@ const baseRules: Array<Omit<OrderedRule, "order">> = [
     evidenceTier: "structured_text",
     description: "A name, email, phone, message, or equivalent standard field could not be populated.",
     matches: (site) =>
-      site.failureKind === "population.blocked" && has(site, /name|email|phone|message|field|populate|missing/),
+      (site.failureKind === "population.blocked" ||
+        site.failureKind === "population.message_not_found" ||
+        site.failureKind === "population.message_fill_failed" ||
+        site.failureKind === "population.contact_method_missing") &&
+      has(site, /name|email|phone|message|field|populate|missing|contact method/),
   },
   {
     id: "POP-LOCATOR-OR-TIMEOUT",
@@ -712,7 +716,10 @@ const baseRules: Array<Omit<OrderedRule, "order">> = [
     subcategory: "browser_validation_after_population",
     evidenceTier: "structured_text",
     description: "Browser or form validation blocked submission without proof of invalid source data.",
-    matches: (site) => site.failureKind === "submission.validation",
+    matches: (site) =>
+      site.failureKind === "submission.validation" ||
+      site.failureKind === "submission.message_lost" ||
+      site.failureKind === "submission.contact_method_lost",
   },
   {
     id: "SUB-POST-VALIDATION-REJECTION",

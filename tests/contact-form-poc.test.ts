@@ -154,11 +154,13 @@ test("contact-form workflow scenarios", async (context) => {
     assert.equal(outcome.submissionConfirmed, true);
   });
 
-  await context.test("submits a contact form with only a message field", async () => {
+  await context.test("rejects a contact form with only a message field", async () => {
     const outcome = await run_for_path("/partial");
 
-    assert.equal(outcome.status, "SUCCESS");
+    assert.equal(outcome.status, "FAILED");
     assert.deepEqual(outcome.populatedFields, ["message"]);
+    assert.equal(outcome.submissionAttempted, false);
+    assert.equal(outcome.failureKind, "population.contact_method_missing");
   });
 
   await context.test("keeps wrapped native forms on the generic submit path", async () => {
@@ -338,13 +340,14 @@ test("contact-form workflow scenarios", async (context) => {
     assert.equal(outcome.messageDisposition, "notOffered");
   });
 
-  await context.test("submits a strong contact form that intentionally has no message field", async () => {
+  await context.test("rejects a strong contact form that has no message field", async () => {
     const outcome = await run_for_path("/contact-without-message");
 
-    assert.equal(outcome.status, "INCONCLUSIVE", JSON.stringify(outcome));
-    assert.equal(outcome.submissionAttempted, true);
+    assert.equal(outcome.status, "FAILED", JSON.stringify(outcome));
+    assert.equal(outcome.submissionAttempted, false);
     assert.equal(outcome.messageDisposition, "notOffered");
-    assert.match(outcome.reason ?? "", /submission was attempted/i);
+    assert.equal(outcome.failureKind, "population.message_not_found");
+    assert.match(outcome.reason ?? "", /message field/i);
   });
 
   await context.test("checks required privacy consent", async () => {
@@ -1951,7 +1954,7 @@ function page_for_path(path: string): string {
     case "/complete-outranks-progression":
       return html(`
         <form id="long-form"><h1>Contact our project team</h1><input type="email" name="email"><input name="name"><input name="company"><input name="project"><button type="button">Next</button></form>
-        <form id="complete-form"><h2>Send a message</h2><textarea name="message"></textarea><button type="submit">Send</button></form>
+        <form id="complete-form"><h2>Send a message</h2><input type="email" name="email"><textarea name="message"></textarea><button type="submit">Send</button></form>
         <div id="result"></div>
         <script>document.querySelector('#complete-form').onsubmit = (event) => { event.preventDefault(); document.querySelector('#result').textContent = 'Thank you for your message.'; };</script>`);
     case "/multi-step-one":

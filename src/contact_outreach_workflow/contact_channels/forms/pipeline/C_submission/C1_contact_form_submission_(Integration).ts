@@ -166,7 +166,7 @@ async function submit_and_assess_contact_form_internal(
         submitCandidates: [],
         buttonAuditEvents: button_audit_events,
         reason: `population-to-submission handoff failed: ${reconciled.reason}`,
-        failureKind: "submission.validation",
+        failureKind: reconciled.failureKind ?? "submission.validation",
         validationBlocked: true,
         aiActions: [],
         obstructionActions: browser_session.obstructionActions ?? [],
