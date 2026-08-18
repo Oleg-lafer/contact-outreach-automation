@@ -847,6 +847,13 @@ test("all current failure kinds have deterministic terminal mappings", async () 
     },
     {
       status: "FAILED",
+      failureKind: "submission.message_integrity",
+      reason: "The exact message failed final integrity verification",
+      attribution: "workflow_attributable",
+      stage: "submission",
+    },
+    {
+      status: "FAILED",
       failureKind: "submission.contact_method_lost",
       reason: "The only verified contact method was lost before submission",
       attribution: "workflow_attributable",

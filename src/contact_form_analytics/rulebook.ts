@@ -718,6 +718,7 @@ const baseRules: Array<Omit<OrderedRule, "order">> = [
     description: "Browser or form validation blocked submission without proof of invalid source data.",
     matches: (site) =>
       site.failureKind === "submission.validation" ||
+      site.failureKind === "submission.message_integrity" ||
       site.failureKind === "submission.message_lost" ||
       site.failureKind === "submission.contact_method_lost",
   },

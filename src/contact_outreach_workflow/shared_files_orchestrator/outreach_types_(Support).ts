@@ -21,6 +21,7 @@ export type AutomationFailureKind =
   | "population.message_fill_failed"
   | "population.contact_method_missing"
   | "submission.message_lost"
+  | "submission.message_integrity"
   | "submission.contact_method_lost"
   | "submission.no_control"
   | "submission.preflight"

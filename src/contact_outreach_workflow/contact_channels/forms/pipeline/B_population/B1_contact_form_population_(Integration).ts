@@ -854,6 +854,140 @@ export async function reconcile_population_submission_handoff(
   });
 }
 
+export interface MessageIntegrityEvidence {
+  passed: boolean;
+  checkedAt: string;
+  reason: string;
+  expectedValue: string;
+  actualValue: string | null;
+  controlIndex: number | null;
+  identity: string | null;
+  connected: boolean;
+  belongsToSelectedForm: boolean;
+  enabled: boolean;
+  editable: boolean;
+  submitRelevant: boolean;
+  metadataMatches: boolean;
+  backingControlFound: boolean;
+  backingControlMatches: boolean | null;
+}
+
+export async function verify_message_integrity(
+  contact_request: ContactRequest,
+  candidate: ContactFormCandidate,
+  handoff: PopulationSubmissionHandoff | undefined,
+): Promise<MessageIntegrityEvidence> {
+  const checked_at = new Date().toISOString();
+  const expected = contact_request.message;
+  const base = {
+    checkedAt: checked_at,
+    expectedValue: expected,
+    actualValue: null,
+    controlIndex: null,
+    identity: null,
+    connected: false,
+    belongsToSelectedForm: false,
+    enabled: false,
+    editable: false,
+    submitRelevant: false,
+    metadataMatches: false,
+    backingControlFound: false,
+    backingControlMatches: null,
+  };
+  if (!expected.trim()) {
+    return { ...base, passed: false, reason: "the supplied message is empty or whitespace-only" };
+  }
+  const snapshot = handoff?.fields.find((field) => field.field === "message");
+  if (!snapshot) {
+    return { ...base, passed: false, reason: "the population handoff has no verified message control" };
+  }
+  const controls = candidate.form.locator(FILLABLE_CONTACT_CONTROL_SELECTOR);
+  const control = controls.nth(snapshot.controlIndex);
+  const count = await controls.count().catch(() => 0);
+  if (snapshot.controlIndex >= count) {
+    return {
+      ...base,
+      controlIndex: snapshot.controlIndex,
+      passed: false,
+      reason: "the expected message control is no longer present in the selected form",
+    };
+  }
+  const [description, actual, connected, enabled, editable] = await Promise.all([
+    describe_field(control).catch(() => undefined),
+    read_contact_control_value(control),
+    control.evaluate((element) => element.isConnected).catch(() => false),
+    control.isEnabled().catch(() => false),
+    control.isEditable().catch(() => false),
+  ]);
+  const belongs_to_form = await candidate.form
+    .evaluate((root, index) => {
+      const selector = 'input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="reset"]):not([type="checkbox"]):not([type="radio"]), textarea, select, [contenteditable="true"]';
+      const selected = root.querySelectorAll(selector).item(index);
+      return Boolean(selected && root.contains(selected));
+    }, snapshot.controlIndex)
+    .catch(() => false);
+  const metadata_matches = description?.metadata === snapshot.metadata;
+  const no_placeholder = !actual.includes("CONTACTWORKFLOWREDACTED");
+  const exact_match = contact_field_value_matches("message", actual, expected);
+  const nonempty = actual.trim().length > 0;
+  const backing_controls = await candidate.form
+    .locator('input[type="hidden"]')
+    .evaluateAll((elements) => elements
+      .map((element) => {
+        const input = element as HTMLInputElement;
+        const identity = [input.name, input.id, input.getAttribute("data-field"), input.getAttribute("aria-label")]
+          .filter(Boolean).join(" ").toLowerCase();
+        return { identity, value: input.value };
+      })
+      .filter((item) => /message|comment|inquir|enquir|description|details|הודעה|פנייה|פניה/u.test(item.identity))
+      .filter((item) => !/captcha|csrf|xsrf|token|nonce|secret|auth|session/u.test(item.identity)))
+    .catch(() => [] as Array<{ identity: string; value: string }>);
+  const backing_matches = backing_controls.length === 0
+    ? null
+    : backing_controls.some((item) =>
+        !item.value.includes("CONTACTWORKFLOWREDACTED") &&
+        contact_field_value_matches("message", item.value, expected));
+  const submit_relevant = connected && belongs_to_form && enabled && editable;
+  const passed = submit_relevant && metadata_matches && nonempty && no_placeholder &&
+    exact_match && backing_matches !== false;
+  const reason = !connected
+    ? "the expected message control is disconnected"
+    : !belongs_to_form
+      ? "the expected message control no longer belongs to the selected form"
+      : !enabled || !editable
+        ? "the expected message control is not enabled and submit-relevant"
+        : !metadata_matches
+          ? "a different control replaced the expected message control"
+          : !nonempty
+            ? "the message is empty immediately before submission"
+            : !no_placeholder
+              ? "the message contains a prohibited diagnostic placeholder"
+              : !exact_match
+                ? "the message is missing, changed, or truncated immediately before submission"
+                : backing_matches === false
+                  ? "the submitted message backing control does not contain the expected message"
+                  : "the exact supplied message is present immediately before submission";
+  return {
+    passed,
+    checkedAt: checked_at,
+    reason,
+    expectedValue: expected,
+    actualValue: actual,
+    controlIndex: snapshot.controlIndex,
+    identity: description
+      ? `${description.tag}[${description.type}] ${description.metadata}`.trim()
+      : null,
+    connected,
+    belongsToSelectedForm: belongs_to_form,
+    enabled,
+    editable,
+    submitRelevant: submit_relevant,
+    metadataMatches: metadata_matches,
+    backingControlFound: backing_controls.length > 0,
+    backingControlMatches: backing_matches,
+  };
+}
+
 type PopulationHandoffReconciliationResult =
   | {
       candidate: ContactFormCandidate;

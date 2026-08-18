@@ -90,6 +90,7 @@ export async function run_forms_workflow(
         targetUrl: contact_request.websiteUrl,
         engine: requested_engine,
         redactionValues: contact_request_redaction_values(contact_request),
+        contactValues: contact_request_debug_values(contact_request),
         environment: process.env,
       });
       owns_deep_debug = true;
@@ -438,6 +439,21 @@ function contact_request_redaction_values(
     contact_request.website,
     contact_request.country,
   ].filter((value): value is string => Boolean(value));
+}
+
+function contact_request_debug_values(contact_request: ContactRequest): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries({
+      name: contact_request.name,
+      email: contact_request.email,
+      phone: contact_request.phone,
+      message: contact_request.message,
+      company: contact_request.company,
+      role: contact_request.role,
+      website: contact_request.website,
+      country: contact_request.country,
+    }).filter((entry): entry is [string, string] => Boolean(entry[1])),
+  );
 }
 
 function population_artifact_directory(

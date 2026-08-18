@@ -14,7 +14,6 @@ import type {
 } from "../src/contact_outreach_workflow/shared_files_orchestrator/page_intelligence_(Integration).js";
 import {
   create_page_intelligence_scope,
-  with_masked_page_values,
 } from "../src/contact_outreach_workflow/shared_files_orchestrator/page_value_redaction_(Integration).js";
 import type {
   ContactFormCandidate,
@@ -631,7 +630,7 @@ test("generic contact-link transport failures do not invoke PageIntelligence", a
   });
 });
 
-test("population masks existing contact values and fills only an approved placeholder", async () => {
+test("Stagehand observation leaves populated contact values unchanged", async () => {
   await with_page(
     `<form>
        <input id="known-name" value="Test User">
@@ -649,18 +648,10 @@ test("population masks existing contact values and fills only an approved placeh
             .evaluateAll((inputs) =>
               inputs.map((input) => (input as HTMLInputElement).value),
             );
-          assert.equal(
-            values.includes(request.name),
-            false,
-            `unmasked values: ${JSON.stringify(values)}`,
-          );
-          assert.equal(
-            values.includes(request.email),
-            false,
-            `unmasked values: ${JSON.stringify(values)}`,
-          );
+          assert.equal(values.includes(request.name), true);
+          assert.equal(values.includes(request.email), true);
           assert.ok(observation.selector?.includes("contact-workflow-ai-scope"));
-          assert.doesNotMatch(
+          assert.match(
             await observation.page.locator("body").innerHTML(),
             /Test User|test@example\.com/,
           );
@@ -701,7 +692,7 @@ test("population masks existing contact values and fills only an approved placeh
   );
 });
 
-test("page masking restores overlapping and one-character contact values", async () => {
+test("PageIntelligence scoping never mutates live contact values", async () => {
   await with_page(
     `<form>
        <input id="long-value" value="Alpha1">
@@ -711,12 +702,10 @@ test("page masking restores overlapping and one-character contact values", async
     async (page) => {
       const scope = await create_page_intelligence_scope(page.locator("form"));
       try {
-        await with_masked_page_values(page, ["Alpha1", "1"], async () => {
-          assert.equal(await page.locator(scope.selector).count(), 1);
-          assert.notEqual(await page.locator("#long-value").inputValue(), "Alpha1");
-          assert.notEqual(await page.locator("#short-value").inputValue(), "1");
-          assert.notEqual(await page.locator("#mirror").innerText(), "Alpha1 / 1");
-        });
+        assert.equal(await page.locator(scope.selector).count(), 1);
+        assert.equal(await page.locator("#long-value").inputValue(), "Alpha1");
+        assert.equal(await page.locator("#short-value").inputValue(), "1");
+        assert.equal(await page.locator("#mirror").innerText(), "Alpha1 / 1");
       } finally {
         await scope.close();
       }
@@ -1069,7 +1058,7 @@ test("submit preflight refuses a control intercepted by a non-cookie overlay", a
   );
 });
 
-test("submission masks populated values and activates exactly one validated control", async () => {
+test("submission observation preserves populated values and activates exactly one validated control", async () => {
   await with_page(
     `<form>
        <input id="email" value="private@example.com">
@@ -1081,12 +1070,11 @@ test("submission masks populated values and activates exactly one validated cont
     async (page) => {
       const intelligence = new FakePageIntelligence({
         observe: async (observation) => {
-          assert.notEqual(
+          assert.equal(
             await observation.page.locator("#email").inputValue(),
             "private@example.com",
-            "the visible input value was not masked",
           );
-          assert.doesNotMatch(
+          assert.match(
             await observation.page.locator("body").innerHTML(),
             /private@example\.com/,
           );
@@ -1379,6 +1367,7 @@ test("population handoff rebinds a rerendered form and repopulates once", async 
          if (!event.target || event.target.id !== 'contact') return;
          event.preventDefault();
          window.submitClicks += 1;
+         window.submittedMessage = new FormData(event.target).get('message');
          document.querySelector('#contact').reset();
          document.querySelector('#status').textContent = 'Thank you, your message was sent.';
        });
@@ -1419,6 +1408,12 @@ test("population handoff rebinds a rerendered form and repopulates once", async 
           () => (window as unknown as { submitClicks: number }).submitClicks,
         ),
         1,
+      );
+      assert.equal(
+        await page.evaluate(
+          () => (window as unknown as { submittedMessage: string }).submittedMessage,
+        ),
+        contact_request().message,
       );
     },
   );
@@ -1501,6 +1496,47 @@ test("submission blocks when its only verified contact method is lost", async ()
     },
   );
 });
+
+for (const scenario of [
+  { name: "removed", replacement: "" },
+  { name: "changed", replacement: "a different message" },
+  { name: "diagnostic placeholder", replacement: "[CONTACTWORKFLOWREDACTEDTESTA]" },
+]) {
+  test(`final message integrity blocks a ${scenario.name} message after preflight begins`, async () => {
+    await with_page(
+      `<form><input type="email" name="email"><textarea name="message"></textarea><button type="submit">Send</button></form>
+       <script>window.submitClicks = 0; document.querySelector('form').onsubmit = event => { event.preventDefault(); window.submitClicks += 1; };</script>`,
+      async (page) => {
+        const candidate = candidate_for(page, page.locator("form"));
+        const population = await populate_contact_form(contact_request(), candidate);
+        assert.ok(population.submissionHandoff);
+        await page.locator("button").evaluate((button, replacement) => {
+          const original = button.getBoundingClientRect.bind(button);
+          let mutated = false;
+          button.getBoundingClientRect = () => {
+            if (!mutated) {
+              mutated = true;
+              (document.querySelector('textarea[name="message"]') as HTMLTextAreaElement).value = replacement;
+            }
+            return original();
+          };
+        }, scenario.replacement);
+        const assessment = await submit_and_assess_contact_form(
+          { page, close: async () => undefined },
+          candidate,
+          { contactRequest: contact_request(), populationHandoff: population.submissionHandoff },
+        );
+        assert.equal(assessment.attempted, false);
+        assert.equal(assessment.failureKind, "submission.message_integrity");
+        assert.match(assessment.reason ?? "", /message integrity blocked submission/i);
+        assert.equal(
+          await page.evaluate(() => (window as unknown as { submitClicks: number }).submitClicks),
+          0,
+        );
+      },
+    );
+  });
+}
 
 test("post-submit form reset with explicit confirmation is not validation failure", async () => {
   await with_page(

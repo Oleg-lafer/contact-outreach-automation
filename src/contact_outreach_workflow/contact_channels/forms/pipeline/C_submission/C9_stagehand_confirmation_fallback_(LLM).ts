@@ -4,7 +4,6 @@ import { describe_error } from "../../../../shared_files_orchestrator/outreach_e
 import { CAPTCHA_SELECTOR } from "../../shared_files_forms/captcha_detection_(Deterministic).js";
 import { create_ai_operation_evidence } from "../../../../shared_files_orchestrator/ai_observability_(Support).js";
 import type { PageIntelligence } from "../../../../shared_files_orchestrator/page_intelligence_(Integration).js";
-import { with_masked_page_values } from "../../../../shared_files_orchestrator/page_value_redaction_(Integration).js";
 import type {
   AiActionEvidence,
   SubmissionConfirmationEvidence,
@@ -77,17 +76,15 @@ export async function classify_stagehand_submission_confirmation({
       page,
       safe_new_messages.map((message) => message.text),
     );
-    extraction = await with_masked_page_values(page, redactionValues, () =>
-      pageIntelligence.extract<ConfirmationClassification>({
-        stage: "confirmation",
-        page,
-        instruction: CONFIRMATION_CLASSIFICATION_INSTRUCTION,
-        schema: confirmation_schema,
-        selector: message_selector,
-        ignoreSelectors: [CAPTCHA_SELECTOR],
-        timeoutMs: AI_OBSERVE_TIMEOUT_MS,
-      }),
-    );
+    extraction = await pageIntelligence.extract<ConfirmationClassification>({
+      stage: "confirmation",
+      page,
+      instruction: CONFIRMATION_CLASSIFICATION_INSTRUCTION,
+      schema: confirmation_schema,
+      selector: message_selector,
+      ignoreSelectors: [CAPTCHA_SELECTOR],
+      timeoutMs: AI_OBSERVE_TIMEOUT_MS,
+    });
   } catch (error) {
     return {
       evidence: "none",

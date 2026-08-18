@@ -17,7 +17,7 @@ const CONTACT_VALUES = {
   name: "Deep Debug Person",
   email: "deep-debug-secret@example.test",
   phone: "+1 202 555 0199",
-  message: "This exact message must never appear in artifacts.",
+  message: "This exact message must appear in deep-debug artifacts.",
 };
 
 let server: Server;
@@ -59,7 +59,7 @@ after(async () => {
 });
 
 test("deep-debug recorder and workflow artifacts", async (context) => {
-  await context.test("redacts contact values and omits raw Stagehand prompts", async () => {
+  await context.test("retains supplied contact values but omits model prompts and security secrets", async () => {
     assert.deepEqual(
       resolve_cli_options(["deep-debug", "input.json", "result.txt"]),
       {
@@ -74,6 +74,7 @@ test("deep-debug recorder and workflow artifacts", async (context) => {
       targetUrl: `${origin}/success?email=${encodeURIComponent(CONTACT_VALUES.email)}`,
       engine: "stagehand",
       redactionValues: Object.values(CONTACT_VALUES),
+      contactValues: CONTACT_VALUES,
       environment: { OPENROUTER_MODEL: "test-model" },
     });
     recorder.record({
@@ -81,7 +82,11 @@ test("deep-debug recorder and workflow artifacts", async (context) => {
       substage: "test",
       operation: "secret-redaction",
       outcome: "observed",
-      data: CONTACT_VALUES,
+      data: {
+        ...CONTACT_VALUES,
+        password: "password-secret-value",
+        captchaToken: "captcha-secret-value",
+      },
     });
     recorder.recordAiOperations("population", CONTACT_VALUES.message, [{
       placeholderInstruction: `raw provider prompt ${CONTACT_VALUES.message}`,
@@ -98,10 +103,11 @@ test("deep-debug recorder and workflow artifacts", async (context) => {
     });
 
     const text = await read_text_artifacts(summary.artifactDirectory);
-    assert_no_contact_values(text);
+    assert_contact_values_present(text);
+    assert.doesNotMatch(text, /password-secret-value|captcha-secret-value/);
     assert.doesNotMatch(text, /raw provider prompt/i);
     assert.match(text, /instructionTemplateId/);
-    assert.match(text, /redacted-contact-value/);
+    assert.match(text, /redacted-secret/);
   });
 
   await context.test("retains the plain timeline when gzip finalization fails", async () => {
@@ -163,8 +169,46 @@ test("deep-debug recorder and workflow artifacts", async (context) => {
     assert.match(timeline, /"operation":"scan-contact-links","outcome":"succeeded"/);
     assert.match(timeline, /"operation":"scan-frame-links","outcome":"succeeded"/);
     assert_chronological(timeline);
-    assert_no_contact_values(await read_text_artifacts(outcome.deepDebug.artifactDirectory));
-    await assert_image_artifacts(outcome.deepDebug.artifactDirectory, []);
+    const artifacts = await read_text_artifacts(outcome.deepDebug.artifactDirectory);
+    assert_contact_values_present(artifacts);
+    assert.doesNotMatch(artifacts, /csrf-secret-value|captcha-secret-value|password-secret-value/);
+    assert.match(timeline, /"contactValuesMasked":false/);
+    const final_snapshot = JSON.parse(await readFile(
+      join(
+        outcome.deepDebug.artifactDirectory,
+        "submission",
+        "snapshots",
+        "20-final-message-integrity-before-submit-click.json",
+      ),
+      "utf8",
+    )) as {
+      snapshot: { controls: Array<{ valueState: {
+        value: string | null;
+        expectedWorkflowField: string | null;
+        expectedValue: string | null;
+        matchesExpected: boolean;
+      } }> };
+    };
+    for (const [field, expected] of Object.entries(CONTACT_VALUES)) {
+      const control = final_snapshot.snapshot.controls.find(
+        (candidate) => candidate.valueState.expectedWorkflowField === field,
+      );
+      assert.ok(control, `missing ${field} control audit`);
+      assert.equal(control.valueState.value, expected);
+      assert.equal(control.valueState.expectedValue, expected);
+      assert.equal(control.valueState.matchesExpected, true);
+    }
+    const integrity = JSON.parse(await readFile(
+      join(outcome.deepDebug.artifactDirectory, "submission", "final-message-integrity.json"),
+      "utf8",
+    )) as { passed: boolean; expectedValue: string; actualValue: string };
+    assert.equal(integrity.passed, true);
+    assert.equal(integrity.expectedValue, CONTACT_VALUES.message);
+    assert.equal(integrity.actualValue, CONTACT_VALUES.message);
+    await assert_image_artifacts(
+      outcome.deepDebug.artifactDirectory,
+      ["final-message-integrity.jpeg"],
+    );
   });
 
   await context.test("retains one JPEG for discovery failures", async () => {
@@ -247,6 +291,33 @@ test("deep-debug recorder and workflow artifacts", async (context) => {
     );
   });
 
+  await context.test("captures exact evidence when final message integrity blocks submission", async () => {
+    const outcome = await run_deep_debug(
+      "/message-mutated-preflight",
+      "message-mutated-preflight",
+    );
+    assert.equal(outcome.status, "FAILED", JSON.stringify(outcome));
+    assert.equal(outcome.failureKind, "submission.message_integrity");
+    assert.equal(outcome.submissionAttempted, false);
+    const evidence = JSON.parse(await readFile(
+      join(outcome.deepDebug!.artifactDirectory, "submission", "final-message-integrity.json"),
+      "utf8",
+    )) as { passed: boolean; expectedValue: string; actualValue: string; reason: string };
+    assert.equal(evidence.passed, false);
+    assert.equal(evidence.expectedValue, CONTACT_VALUES.message);
+    assert.equal(evidence.actualValue, "message changed after population");
+    assert.match(evidence.reason, /changed|truncated/i);
+    const timeline = await read_timeline(outcome.deepDebug!.timelinePath);
+    assert.equal(
+      count_occurrences(timeline, '"operation":"activate-submit-control","outcome":"started"'),
+      0,
+    );
+    await assert_image_artifacts(
+      outcome.deepDebug!.artifactDirectory,
+      ["final-message-integrity.jpeg"],
+    );
+  });
+
   await context.test("records inactive hidden conditional disabling and restoration", async () => {
     const outcome = await run_deep_debug(
       "/hidden-conditional",
@@ -290,7 +361,7 @@ test("deep-debug recorder and workflow artifacts", async (context) => {
       ),
       true,
     );
-    assert_no_contact_values(
+    assert_contact_values_present(
       await read_text_artifacts(outcome.deepDebug!.artifactDirectory),
     );
   });
@@ -391,14 +462,17 @@ test("deep-debug recorder and workflow artifacts", async (context) => {
     assert.match(unconfirmed_timeline, /deterministic-evidence/);
     await assert_image_artifacts(
       unconfirmed.deepDebug!.artifactDirectory,
-      ["terminal-state.jpeg"],
+      ["final-message-integrity.jpeg"],
     );
 
     const captcha = await run_deep_debug("/passive-captcha", "passive-captcha");
     assert.equal(captcha.status, "SUCCESS", JSON.stringify(captcha));
     assert.equal(captcha.submissionConfirmed, true);
     assert.equal(captcha.submissionDebug?.captchaBlocked, false);
-    await assert_image_artifacts(captcha.deepDebug!.artifactDirectory, []);
+    await assert_image_artifacts(
+      captcha.deepDebug!.artifactDirectory,
+      ["final-message-integrity.jpeg"],
+    );
   });
 
   await context.test("keeps rejection, contradiction, and artifacts in agreement", async () => {
@@ -429,10 +503,13 @@ test("deep-debug recorder and workflow artifacts", async (context) => {
       assert.equal(contradictory.signalEvaluation.hasPositiveSignals, true);
       assert.equal(contradictory.signalEvaluation.hasNegativeSignals, true);
     }
-    await assert_image_artifacts(rejected.deepDebug!.artifactDirectory, []);
+    await assert_image_artifacts(
+      rejected.deepDebug!.artifactDirectory,
+      ["final-message-integrity.jpeg"],
+    );
     await assert_image_artifacts(
       contradictory.deepDebug!.artifactDirectory,
-      ["terminal-state.jpeg"],
+      ["final-message-integrity.jpeg"],
     );
 
     for (const outcome of [rejected, contradictory]) {
@@ -447,7 +524,7 @@ test("deep-debug recorder and workflow artifacts", async (context) => {
         artifacts,
         new RegExp(`"failureKind": "${outcome.failureKind!.replace(".", "\\.")}"`),
       );
-      assert_no_contact_values(artifacts);
+      assert_contact_values_present(artifacts);
       assert.equal(
         count_occurrences(
           await read_timeline(outcome.deepDebug!.timelinePath),
@@ -459,14 +536,14 @@ test("deep-debug recorder and workflow artifacts", async (context) => {
   });
 });
 
-test("keeps Hebrew success evidence bounded and redacted", async () => {
+test("keeps Hebrew success evidence bounded with auditable supplied values", async () => {
   const outcome = await run_deep_debug("/hebrew-success", "hebrew-success");
   assert.equal(outcome.status, "SUCCESS", JSON.stringify(outcome));
   assert.equal(outcome.submissionConfirmed, true);
   assert.equal(outcome.deepDebug?.artifactErrorCount, 0);
   const artifacts = await read_text_artifacts(outcome.deepDebug!.artifactDirectory);
   assert.match(artifacts, /פנייתך התקבלה/u);
-  assert_no_contact_values(artifacts);
+  assert_contact_values_present(artifacts);
 });
 
 async function run_deep_debug(path: string, name: string) {
@@ -522,6 +599,11 @@ function page_for_path(path: string): string {
   const captcha = path === "/passive-captcha"
     ? '<div class="g-recaptcha" data-sitekey="test"></div>'
     : "";
+  const security_fields = path === "/success"
+    ? `<input type="hidden" name="csrf_token" value="csrf-secret-value">
+       <input type="hidden" name="captcha_token" value="captcha-secret-value">
+       <input type="password" name="password" value="password-secret-value">`
+    : "";
   const submit_behavior =
     path === "/success" || path === "/passive-captcha"
       ? "status.textContent = 'Thank you. Your message has been sent successfully.';"
@@ -558,6 +640,19 @@ function page_for_path(path: string): string {
              document.body.appendChild(overlay);
            }`
         : "";
+  const message_integrity_mutation = path === "/message-mutated-preflight"
+    ? `const submit = form.querySelector('button');
+       const originalRect = submit.getBoundingClientRect.bind(submit);
+       let populatedGeometryChecks = 0;
+       submit.getBoundingClientRect = () => {
+         const message = form.elements.message;
+         if (message.value) {
+           populatedGeometryChecks += 1;
+           if (populatedGeometryChecks >= 2) message.value = 'message changed after population';
+         }
+         return originalRect();
+       };`
+    : "";
   return `<!doctype html>
     <html><body><main><h1>Contact our team</h1>
       <form id="contact" action="/contact" method="post">
@@ -565,12 +660,14 @@ function page_for_path(path: string): string {
         <label>Email <input name="email" type="email" required></label>
         <label>Phone <input name="phone" type="tel"></label>
         <label>Message <textarea name="message" required></textarea></label>
+        ${security_fields}
         ${hidden_required}${captcha}
         <button type="submit">Send message</button>
       </form><div id="status" role="status"></div></main>
       <script>
         const form = document.querySelector('#contact');
         const status = document.querySelector('#status');
+        ${message_integrity_mutation}
         form.addEventListener('input', () => { ${input_behavior} }, { once: true });
         form.addEventListener('submit', event => {
           event.preventDefault();
@@ -631,9 +728,9 @@ async function assert_image_artifacts(
   }
 }
 
-function assert_no_contact_values(value: string): void {
+function assert_contact_values_present(value: string): void {
   for (const secret of Object.values(CONTACT_VALUES)) {
-    assert.equal(value.includes(secret), false, `artifact leaked contact value: ${secret}`);
+    assert.equal(value.includes(secret), true, `artifact omitted contact value: ${secret}`);
   }
 }
 

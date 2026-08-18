@@ -19,7 +19,10 @@ import {
   type InactiveRequiredControlLease,
   type RequiredControlRestorationResult,
 } from "../../shared_files_forms/required_control_inventory_(Deterministic).js";
-import { reconcile_population_submission_handoff } from "../B_population/B1_contact_form_population_(Integration).js";
+import {
+  reconcile_population_submission_handoff,
+  verify_message_integrity,
+} from "../B_population/B1_contact_form_population_(Integration).js";
 import type {
   ButtonControlDebugInfo,
   ButtonClickAuditEvent,
@@ -836,7 +839,78 @@ async function submit_and_assess_contact_form_internal(
       populationRecoveryAttempted: population_recovery_attempted,
     },
   });
+  const enforce_final_message_integrity = async (
+    label: string,
+  ): Promise<SubmissionAssessment | undefined> => {
+    if (!debug_options.contactRequest) return undefined;
+    const evidence = await verify_message_integrity(
+      debug_options.contactRequest,
+      candidate,
+      debug_options.populationHandoff,
+    );
+    await deep_debug?.writeJson("submission/final-message-integrity.json", evidence);
+    deep_debug?.record({
+      stage: "submission",
+      substage: "message-integrity",
+      operation: "verify-final-message-before-activation",
+      outcome: evidence.passed ? "succeeded" : "blocked",
+      reason: evidence.reason,
+      url: page.url(),
+      frameUrl: candidate.frame.url(),
+      data: {
+        checkpoint: label,
+        controlIndex: evidence.controlIndex,
+        identity: evidence.identity,
+        expectedLength: evidence.expectedValue.length,
+        actualLength: evidence.actualValue?.length ?? 0,
+        connected: evidence.connected,
+        belongsToSelectedForm: evidence.belongsToSelectedForm,
+        enabled: evidence.enabled,
+        editable: evidence.editable,
+        submitRelevant: evidence.submitRelevant,
+        metadataMatches: evidence.metadataMatches,
+        backingControlFound: evidence.backingControlFound,
+        backingControlMatches: evidence.backingControlMatches,
+        matchesExpected: evidence.passed,
+      },
+    });
+    await deep_debug?.captureFormSnapshot({
+      stage: "submission",
+      label,
+      form: candidate.form,
+      expectedValues: browser_session.redactionValues ?? [],
+      extra: { messageIntegrity: evidence },
+    });
+    await deep_debug?.captureScreenshot(
+      page,
+      "submission",
+      "final-message-integrity",
+      { locator: candidate.form },
+    );
+    if (evidence.passed) return undefined;
+    return finalize_unattempted_submission({
+      browserSession: browser_session,
+      form: candidate.form,
+      debugContext: debug_context,
+      urlBeforeSubmission: url_before_submission,
+      submitCandidates: submit_control_result.candidates ?? [],
+      buttonAuditEvents: button_audit_events,
+      reason: `message integrity blocked submission: ${evidence.reason}; expected length ${evidence.expectedValue.length}, actual length ${evidence.actualValue?.length ?? 0}`,
+      failureKind: "submission.message_integrity",
+      validationBlocked: true,
+      preSubmitValidation: pre_submit_validation_evidence,
+      aiActions: stagehand_ai_actions,
+      obstructionActions: browser_session.obstructionActions ?? [],
+    });
+  };
   if (stagehand_proposal) {
+    const integrity_failure = await enforce_final_message_integrity(
+      "20-final-message-integrity-before-stagehand-submit",
+    );
+    if (integrity_failure) {
+      await release_stagehand_submission_proposal_if_present(stagehand_proposal);
+      return integrity_failure;
+    }
     const stagehand_dialog_sequence = browser_session.dialogController?.beginSubmit() ?? 0;
     const stagehand_result = await activate_stagehand_submission_proposal(
       stagehand_proposal,
@@ -902,6 +976,10 @@ async function submit_and_assess_contact_form_internal(
     submit_control_result.control!,
     submit_control_result,
   );
+  const integrity_failure = await enforce_final_message_integrity(
+    "20-final-message-integrity-before-submit-click",
+  );
+  if (integrity_failure) return integrity_failure;
   const submit_button_event = await create_button_click_audit_event(
     page,
     "submit",
@@ -923,13 +1001,6 @@ async function submit_and_assess_contact_form_internal(
       audit: submit_button_event,
     },
   });
-  await deep_debug?.captureFormSnapshot({
-    stage: "submission",
-    label: "20-immediately-before-submit-click",
-    form: candidate.form,
-    expectedValues: browser_session.redactionValues ?? [],
-  });
-
   let click_error: string | undefined;
   const dialog_sequence = browser_session.dialogController?.beginSubmit() ?? 0;
   try {

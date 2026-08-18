@@ -414,6 +414,7 @@ function sanitize_debug_artifact(
     if (/authorization|cookie|token|password|secret|api.?key|session/i.test(key)) {
       return "[redacted-secret]";
     }
+    if (redaction_values.includes(value)) return value;
     let result = value;
     for (const secret of [...redaction_values].sort(
       (left, right) => right.length - left.length,

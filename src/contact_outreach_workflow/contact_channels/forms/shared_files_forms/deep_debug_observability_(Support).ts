@@ -14,7 +14,6 @@ import { dirname, extname, join, resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { createGzip } from "node:zlib";
 import type { Locator, Page } from "playwright";
-import { with_masked_page_values } from "../../../shared_files_orchestrator/page_value_redaction_(Integration).js";
 import type {
   DeepDebugArtifactSummary,
   DeepDebugContext,
@@ -88,25 +87,15 @@ export async function create_deep_debug_context(
   };
   const redaction_values = [...new Set(options.redactionValues.filter(Boolean))]
     .sort((left, right) => right.length - left.length);
+  const contact_values = options.contactValues ?? {};
   let write_queue: Promise<void> = Promise.resolve();
   let finalized = false;
   let final_summary: DeepDebugArtifactSummary | undefined;
 
   const sanitize_text = (value: string): string => {
+    if (redaction_values.includes(value)) return value;
     let redacted = value;
-    for (const secret of redaction_values) {
-      if (secret.trim().length < 2) continue;
-      redacted = redacted.replace(
-        new RegExp(escape_regexp(secret), "gi"),
-        "[redacted-contact-value]",
-      );
-    }
     redacted = redacted
-      .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[redacted-email]")
-      .replace(
-        /(?:\+\d[\d\s().-]{6,}\d|\(\d{2,4}\)[\d\s.-]{4,}\d|\d{2,4}[ -]\d{3,4}[ -]\d{3,4})/g,
-        "[redacted-phone]",
-      )
       .replace(
         /((?:authorization|api[-_ ]?key|access[-_ ]?token|refresh[-_ ]?token|password|secret|session|cookie)\s*[:=]\s*)[^\s,;]+/gi,
         "$1[redacted-secret]",
@@ -247,19 +236,24 @@ export async function create_deep_debug_context(
     runId: run_id,
     artifactDirectory: artifact_directory,
     redactionValues: redaction_values,
+    contactValues: contact_values,
     record,
     writeJson: write_json,
     captureFormSnapshot: async ({ stage, label, form, expectedValues, extra }) => {
       const started = performance.now();
       try {
+        const captured_at = new Date().toISOString();
         const snapshot = await collect_form_snapshot(
           form,
-          expectedValues ?? [],
+          contact_values,
           MAX_CONTROLS_PER_SNAPSHOT,
+          stage,
+          label,
+          captured_at,
         );
         const document = sanitize({
           schemaVersion: SCHEMA_VERSION,
-          capturedAt: new Date().toISOString(),
+          capturedAt: captured_at,
           label,
           snapshot,
           ...(extra === undefined ? {} : { extra }),
@@ -313,22 +307,20 @@ export async function create_deep_debug_context(
       try {
         await set_browser_instrumentation_paused(page, true);
         await mkdir(dirname(absolute_path), { recursive: true });
-        await with_masked_page_values(page, redaction_values, () =>
-          options.locator
-            ? options.locator.screenshot({
-                path: absolute_path,
-                type: "jpeg",
-                quality: SCREENSHOT_JPEG_QUALITY,
-                animations: "disabled",
-              })
-            : page.screenshot({
-                path: absolute_path,
-                type: "jpeg",
-                quality: SCREENSHOT_JPEG_QUALITY,
-                fullPage: options.fullPage ?? false,
-                animations: "disabled",
-              }),
-        );
+        await (options.locator
+          ? options.locator.screenshot({
+              path: absolute_path,
+              type: "jpeg",
+              quality: SCREENSHOT_JPEG_QUALITY,
+              animations: "disabled",
+            })
+          : page.screenshot({
+              path: absolute_path,
+              type: "jpeg",
+              quality: SCREENSHOT_JPEG_QUALITY,
+              fullPage: options.fullPage ?? false,
+              animations: "disabled",
+            }));
         counters.screenshots += 1;
         record({
           stage,
@@ -337,7 +329,7 @@ export async function create_deep_debug_context(
           outcome: "succeeded",
           data: {
             path: absolute_path,
-            contactValuesMasked: true,
+            contactValuesMasked: false,
             format: "jpeg",
             quality: SCREENSHOT_JPEG_QUALITY,
             scope: options.locator
@@ -524,8 +516,11 @@ export async function create_deep_debug_context(
 
 async function collect_form_snapshot(
   form: Locator,
-  expected_values: readonly string[],
+  contact_values: Record<string, string | undefined>,
   max_controls: number,
+  stage: string,
+  label: string,
+  captured_at: string,
 ): Promise<{
   frameUrl: string;
   pageUrl: string;
@@ -554,6 +549,16 @@ async function collect_form_snapshot(
         const style = getComputedStyle(element);
         return box.width > 0 && box.height > 0 && style.display !== "none" && style.visibility !== "hidden";
       };
+      const normalize_lines = (value: string): string => value.replace(/\r\n?/g, "\n");
+      const matches_expected = (field: string, actual: string, expected: string): boolean => {
+        if (field === "message") return normalize_lines(actual) === normalize_lines(expected);
+        if (field === "email") return actual.trim().toLowerCase() === expected.trim().toLowerCase();
+        if (field === "phone") {
+          const digits = (value: string) => value.replace(/\D/g, "");
+          return digits(actual).length > 0 && digits(actual) === digits(expected);
+        }
+        return actual === expected;
+      };
       return {
         form: {
           identity: describe_element(root),
@@ -576,7 +581,28 @@ async function collect_form_snapshot(
           const control = element as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | HTMLButtonElement;
           const box = element.getBoundingClientRect();
           const style = getComputedStyle(element);
-          const value = "value" in control ? String(control.value ?? "") : "";
+          const raw_value = "value" in control
+            ? String(control.value ?? "")
+            : element.getAttribute("contenteditable") === "true"
+              ? element.textContent ?? ""
+              : "";
+          const security_identity = [
+            element.getAttribute("name"),
+            element.id,
+            element.getAttribute("type"),
+            element.getAttribute("autocomplete"),
+            element.getAttribute("aria-label"),
+          ].filter(Boolean).join(" ");
+          const security_sensitive =
+            /password|passcode|captcha|csrf|xsrf|authenticity|nonce|token|secret|session|api.?key|authorization/i.test(security_identity) ||
+            element.getAttribute("type") === "file";
+          const value = security_sensitive ? null : raw_value;
+          const expected_entry = value === null
+            ? undefined
+            : Object.entries(input.contactValues).find(([field, expected]) =>
+                typeof expected === "string" && matches_expected(field, value, expected));
+          const expected_field = expected_entry?.[0];
+          const expected_value = expected_entry?.[1];
           const validity = "validity" in control ? control.validity : undefined;
           const labels = "labels" in control && control.labels
             ? Array.from(control.labels).map((label) => (label.textContent ?? "").trim().replace(/\s+/g, " "))
@@ -594,17 +620,25 @@ async function collect_form_snapshot(
             ariaLabel: element.getAttribute("aria-label") ?? "",
             autocomplete: element.getAttribute("autocomplete") ?? "",
             labels,
+            label: labels.join(" "),
             text: element instanceof HTMLButtonElement || element.getAttribute("role") === "button"
               ? (element.innerText || element.textContent || "").trim().replace(/\s+/g, " ")
               : "",
             required: "required" in control ? Boolean(control.required) : element.getAttribute("aria-required") === "true",
             disabled: "disabled" in control ? Boolean(control.disabled) : element.getAttribute("aria-disabled") === "true",
+            enabled: "disabled" in control ? !control.disabled : element.getAttribute("aria-disabled") !== "true",
             readOnly: "readOnly" in control ? Boolean(control.readOnly) : false,
             checked: "checked" in control ? Boolean(control.checked) : undefined,
+            selectedValue: "checked" in control && control.checked ? value : undefined,
+            selectedLabel: "checked" in control && control.checked ? labels.join(" ") : undefined,
             selectedIndex: element instanceof HTMLSelectElement ? element.selectedIndex : undefined,
-            selectedOptions: element instanceof HTMLSelectElement
+            selectedOptions: element instanceof HTMLSelectElement && !security_sensitive
               ? Array.from(element.selectedOptions).map((option) => ({ text: option.text, value: option.value }))
               : undefined,
+            submitRelevant: element.getAttribute("type") !== "button" &&
+              element.getAttribute("type") !== "submit" &&
+              element.getAttribute("type") !== "reset" &&
+              !security_sensitive,
             visible: visible(element),
             connected: element.isConnected,
             boundingBox: { x: box.x, y: box.y, width: box.width, height: box.height },
@@ -617,10 +651,17 @@ async function collect_form_snapshot(
               zIndex: style.zIndex,
             },
             valueState: {
-              present: value.length > 0,
-              length: value.length,
-              matchesExpected: value.length > 0 && input.expectedValues.some((expected) => expected === value),
+              excluded: security_sensitive,
+              value,
+              present: value !== null && value.length > 0,
+              length: value?.length ?? 0,
+              expectedWorkflowField: expected_field ?? null,
+              expectedValue: expected_value ?? null,
+              matchesExpected: expected_field !== undefined,
             },
+            capturePhase: input.stage,
+            captureLabel: input.label,
+            capturedAt: input.capturedAt,
             willValidate: "willValidate" in control ? control.willValidate : false,
             validationMessage: "validationMessage" in control ? control.validationMessage : "",
             validity: validity
@@ -642,7 +683,13 @@ async function collect_form_snapshot(
         }),
       };
     },
-    { expectedValues: [...expected_values], maxControls: max_controls },
+    {
+      contactValues: contact_values,
+      maxControls: max_controls,
+      stage,
+      label,
+      capturedAt: captured_at,
+    },
   );
   return {
     frameUrl: form.page().url(),
