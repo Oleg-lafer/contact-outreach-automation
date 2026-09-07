@@ -330,6 +330,10 @@ async function run_stagehand_discovery_fallback(
         label: action.instruction,
         score: 0,
         result: "opened",
+        diagnosticResult: "loaded",
+        finalUrl: browser_session.page.url(),
+        pageQuality: "usable",
+        inspectionCompleted: true,
         reason: classification.normalization,
       });
       collector?.recordAiAction({
@@ -354,6 +358,10 @@ async function run_stagehand_discovery_fallback(
         label: action.instruction,
         score: 0,
         result: "failed",
+        diagnosticResult: /timeout/i.test(fallback_reason) ? "timed_out" : "navigation_failed",
+        finalUrl: browser_session.page.url(),
+        pageQuality: "unknown",
+        inspectionCompleted: false,
         reason: fallback_reason,
       });
       collector?.recordAiAction({
@@ -365,8 +373,13 @@ async function run_stagehand_discovery_fallback(
       });
     }
 
-    await wait_for_discovery_readiness(browser_session.page);
+    const readiness = await wait_for_discovery_readiness(browser_session.page);
     await dismiss_cookie_obstruction(browser_session.page);
+    await collector?.captureInspection(browser_session.page, "aiFallback", {
+      requestedUrl: target.destination,
+      navigationOutcome: "loaded",
+      readiness,
+    });
     const interaction_after = await capture_discovery_interaction_state(
       browser_session.page,
     );

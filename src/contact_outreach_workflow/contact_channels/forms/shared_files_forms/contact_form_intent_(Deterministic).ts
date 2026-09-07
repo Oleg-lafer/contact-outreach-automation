@@ -17,6 +17,29 @@ export interface ContactFormAssessment {
   reason: string;
   messageDisposition: Exclude<MessageDisposition, "populated">;
   signals: ContactFormAssessmentSignals;
+  diagnostics?: {
+    tagName: string;
+    domPath: string;
+    action: string;
+    method: string;
+    contextExcerpt: string;
+    controls: Array<{
+      tagName: string;
+      type: string;
+      name: string;
+      label: string;
+      placeholder: string;
+      required: boolean;
+      disabled: boolean;
+      readOnly: boolean;
+      visible: boolean;
+      width: number;
+      height: number;
+    }>;
+    ruleId: string;
+    scoreContributions: Array<{ ruleId: string; score: number }>;
+    omittedControls: number;
+  };
 }
 
 export async function assess_contact_form(
@@ -302,6 +325,68 @@ export async function assess_contact_form(
             "form offers no message field and no safe non-submit progression control";
         else reason = "form does not have a sufficient contact shape";
       }
+      const rule_id = complete
+        ? "DISCOVERY-CANDIDATE-COMPLETE"
+        : progression
+          ? "DISCOVERY-CANDIDATE-PROGRESSION"
+          : has_newsletter_context
+            ? "DISCOVERY-REJECT-NEWSLETTER"
+            : has_route_context
+              ? "DISCOVERY-REJECT-DIRECTIONS"
+              : has_search_or_login_context
+                ? "DISCOVERY-REJECT-SEARCH-LOGIN"
+                : has_job_context
+                  ? "DISCOVERY-REJECT-JOBS"
+                  : !has_submit
+                    ? "DISCOVERY-REJECT-NO-SUBMIT"
+                    : !has_email
+                      ? "DISCOVERY-REJECT-NO-EMAIL"
+                      : !has_message && !has_contact_context
+                        ? "DISCOVERY-REJECT-NO-MESSAGE-CONTEXT"
+                        : !has_message && !has_safe_progression
+                          ? "DISCOVERY-REJECT-NO-MESSAGE-PROGRESSION"
+                          : "DISCOVERY-REJECT-SHAPE";
+      const score_contributions = [
+        ...(has_contact_context ? [{ ruleId: "SCORE-CONTACT-CONTEXT", score: 4 }] : []),
+        ...(has_message ? [{ ruleId: "SCORE-MESSAGE", score: 6 }] : []),
+        ...(has_email ? [{ ruleId: "SCORE-EMAIL", score: 5 }] : []),
+        ...(has_identity ? [{ ruleId: "SCORE-IDENTITY", score: 2 }] : []),
+        ...(has_business_or_project ? [{ ruleId: "SCORE-BUSINESS-PROJECT", score: 2 }] : []),
+        ...(has_submit ? [{ ruleId: "SCORE-SUBMIT", score: 2 }] : []),
+        ...(has_safe_progression ? [{ ruleId: "SCORE-SAFE-PROGRESSION", score: 3 }] : []),
+        ...(has_negative_context ? [{ ruleId: "SCORE-NEGATIVE-CONTEXT", score: -12 }] : []),
+      ];
+      const dom_indexes: number[] = [];
+      let current: Element | null = element;
+      while (current?.parentElement) {
+        dom_indexes.unshift(Array.prototype.indexOf.call(current.parentElement.children, current));
+        current = current.parentElement;
+      }
+      const diagnostic_controls = [...controls, ...submit_controls]
+        .slice(0, 20)
+        .map((control) => {
+          const bounds = (control as HTMLElement).getBoundingClientRect();
+          const style = window.getComputedStyle(control as HTMLElement);
+          const labels = "labels" in control
+            ? Array.from((control as HTMLInputElement | HTMLTextAreaElement).labels ?? [])
+                .map((label) => label.textContent ?? "")
+                .join(" ")
+            : "";
+          return {
+            tagName: control.tagName.toLowerCase(),
+            type: control.getAttribute("type") ?? "",
+            name: control.getAttribute("name") ?? "",
+            label: [labels, control.textContent, control.getAttribute("aria-label")]
+              .filter(Boolean).join(" ").trim().replace(/\s+/g, " ").slice(0, 200),
+            placeholder: (control.getAttribute("placeholder") ?? "").slice(0, 200),
+            required: control.hasAttribute("required") || control.getAttribute("aria-required") === "true",
+            disabled: control.hasAttribute("disabled") || control.getAttribute("aria-disabled") === "true",
+            readOnly: control.hasAttribute("readonly"),
+            visible: style.display !== "none" && style.visibility !== "hidden" && bounds.width > 0 && bounds.height > 0,
+            width: Math.round(bounds.width),
+            height: Math.round(bounds.height),
+          };
+        });
       return {
         accepted,
         classification,
@@ -309,6 +394,17 @@ export async function assess_contact_form(
         reason,
         messageDisposition: has_message ? "unresolved" : "notOffered",
         signals,
+        diagnostics: {
+          tagName: element.tagName.toLowerCase(),
+          domPath: dom_indexes.join("/"),
+          action: element.getAttribute("action") ?? "",
+          method: element.getAttribute("method") ?? "",
+          contextExcerpt: context.trim().replace(/\s+/g, " ").slice(0, 500),
+          controls: diagnostic_controls,
+          ruleId: rule_id,
+          scoreContributions: score_contributions,
+          omittedControls: Math.max(0, controls.length + submit_controls.length - diagnostic_controls.length),
+        },
       };
     }, {
       captchaSelector: CAPTCHA_SELECTOR,

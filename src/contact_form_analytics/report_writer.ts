@@ -94,6 +94,20 @@ const renderTextReport = (result: AnalyticsResult, includeSiteLists: boolean): s
     );
     if (includeSiteLists) lines.push(`  Sites: ${siteList(group.siteIds)}`);
   }
+  const observability = result.discoveryObservability;
+  lines.push(
+    "",
+    "DISCOVERY OBSERVABILITY",
+    `Schema-v2 evidence available: ${observability.availableSites.count}`,
+    `Legacy/no schema-v2 evidence: ${observability.legacySites.count}`,
+  );
+  for (const [disposition, group] of Object.entries(observability.dispositions)) {
+    lines.push(`${disposition}: ${group.count}`);
+    if (includeSiteLists) lines.push(`  Sites: ${siteList(group.siteIds)}`);
+  }
+  for (const [contradiction, group] of Object.entries(observability.contradictions)) {
+    lines.push(`Contradiction ${contradiction}: ${group.count}`);
+  }
   lines.push("", "STAGE FUNNEL");
   for (const stage of result.stages) lines.push("", ...renderStage(stage, includeSiteLists));
   lines.push("", "DATA QUALITY AND RECONCILIATION");
@@ -106,6 +120,30 @@ const renderTextReport = (result: AnalyticsResult, includeSiteLists: boolean): s
   for (const warning of result.dataQualityWarnings) lines.push(`  - ${warning}`);
   return `${lines.join("\r\n")}\r\n`;
 };
+
+const discoveryObservabilitySummaryCsv = (result: AnalyticsResult): string => {
+  const rows: unknown[][] = [];
+  const add = (dimension: string, groups: Record<string, { count: number; siteIds: string[] }>) => {
+    for (const [value, group] of Object.entries(groups)) rows.push([dimension, value, group.count, group.siteIds]);
+  };
+  add("disposition", result.discoveryObservability.dispositions);
+  add("assessment_rule", result.discoveryObservability.assessmentRules);
+  add("route_outcome", result.discoveryObservability.routeOutcomes);
+  add("page_quality", result.discoveryObservability.pageQualities);
+  add("candidate_rule", result.discoveryObservability.candidateRules);
+  add("incomplete_reason", result.discoveryObservability.incompleteReasons);
+  add("contradiction", result.discoveryObservability.contradictions);
+  return csv(["dimension", "value", "count", "site_ids"], rows);
+};
+
+const discoveryObservabilitySiteCsv = (result: AnalyticsResult): string => csv(
+  ["site_id", "website_url", "disposition", "assessment_rule_id", "inspection_ids", "candidate_ids", "evidence_ids", "screenshot_paths", "contradictions", "artifact_path"],
+  result.discoveryObservability.sites.map((site) => [
+    site.siteId, site.websiteUrl, site.disposition, site.assessmentRuleId,
+    site.inspectionIds, site.candidateIds, site.evidenceIds, site.screenshotPaths,
+    site.contradictions, site.artifactPath,
+  ]),
+);
 
 const renderMermaidDefinition = (result: AnalyticsResult): string => {
   const stage = (name: StageStatistics["stage"]): StageStatistics => {
@@ -999,6 +1037,8 @@ const outputFiles = async (result: OutreachAnalyticsResult): Promise<OutputFiles
     "qualitative-statistics-proportional.svg": renderProportionalFunnelSvg(forms),
     "qualitative-statistics.json": `${JSON.stringify(forms, null, 2)}\n`,
     "stage-statistics.csv": stageCsv(forms),
+    "discovery-observability-statistics.csv": discoveryObservabilitySummaryCsv(forms),
+    "discovery-observability-sites.csv": discoveryObservabilitySiteCsv(forms),
     "site-classifications.csv": siteCsv(forms.sites),
     "rulebook.json": `${JSON.stringify(serializedRulebook, null, 2)}\n`,
     [path.join("signals", "positive-signal-statistics.csv")]: formSignalCsv(

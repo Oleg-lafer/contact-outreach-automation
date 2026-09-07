@@ -323,9 +323,60 @@ test("newsletter forms remain rejected and write redacted discovery diagnostics"
         const report = await readFile(result.debug!.reportPath, "utf8");
         assert.match(report, /newsletter or subscription semantics/i);
         assert.doesNotMatch(report, /Fixture inquiry|test@example\.com/);
+        const debug = JSON.parse(report) as {
+          version: number;
+          summary: { candidates: Array<{ candidateId: string; inspectionId: string; ruleId: string; controls: unknown[] }> };
+        };
+        assert.equal(debug.version, 2);
+        assert.equal(debug.summary.candidates[0]?.candidateId, "candidate-1");
+        assert.equal(debug.summary.candidates[0]?.inspectionId, "inspection-1");
+        assert.equal(debug.summary.candidates[0]?.ruleId, "DISCOVERY-REJECT-NEWSLETTER");
+        assert.ok((debug.summary.candidates[0]?.controls.length ?? 21) <= 20);
       },
     );
   } finally {
+    await rm(artifact_directory, { recursive: true, force: true });
+  }
+});
+
+test("discovery diagnostics distinguish a resolved navigation from an HTTP error", async () => {
+  const artifact_directory = await mkdtemp(join(tmpdir(), "discovery-http-error-"));
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  try {
+    await page.route("http://local.test/", (route) => route.fulfill({
+      status: 200,
+      contentType: "text/html",
+      body: '<main><a href="/contact">Contact us</a></main>',
+    }));
+    await page.route("http://local.test/contact", (route) => route.fulfill({
+      status: 404,
+      contentType: "text/html",
+      body: '<main><h1>404 Not Found</h1></main>',
+    }));
+    await page.goto("http://local.test/");
+    const result = await discover_contact_form(
+      { page, close: async () => undefined },
+      page.url(),
+      { artifactDirectory: artifact_directory },
+    );
+    const debug = JSON.parse(await readFile(result.debug!.reportPath, "utf8")) as {
+      summary: {
+        attemptedRoutes: Array<{ result: string; diagnosticResult: string; mainDocumentStatus: number; inspectionCompleted: boolean; pageQuality: string }>;
+        inspectionAttempts: Array<{ inspectionId: string; mainDocumentStatus?: number; pageQuality: string }>;
+        coverageAssessment: { completeEnoughForNoFormConclusion: boolean; incompleteReasons: string[] };
+      };
+    };
+    const route = debug.summary.attemptedRoutes.find((item) => item.mainDocumentStatus === 404);
+    assert.equal(route?.result, "opened");
+    assert.equal(route?.diagnosticResult, "http_error");
+    assert.equal(route?.inspectionCompleted, true);
+    assert.equal(route?.pageQuality, "error_page");
+    assert.ok(debug.summary.inspectionAttempts.some((item) => item.mainDocumentStatus === 404));
+    assert.equal(debug.summary.coverageAssessment.completeEnoughForNoFormConclusion, false);
+    assert.ok(debug.summary.coverageAssessment.incompleteReasons.some((reason) => reason.includes("http_error")));
+  } finally {
+    await context.close();
     await rm(artifact_directory, { recursive: true, force: true });
   }
 });

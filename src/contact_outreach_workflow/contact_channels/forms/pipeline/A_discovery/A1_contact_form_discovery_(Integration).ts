@@ -16,6 +16,7 @@ import type {
   BrowserSession,
   FormDiscoveryResult,
   ContactFormCandidate,
+  DiscoveryRouteAttemptDebug,
 } from "../../shared_files_forms/forms_types_(Support).js";
 import type { DeepDebugContext } from "../../shared_files_forms/deep_debug_types_(Support).js";
 import { discover_contact_form_with_stagehand_fallback } from "./A2_stagehand_discovery_fallback_(LLM).js";
@@ -78,7 +79,10 @@ export async function discover_contact_form(
     deepDebug?: DeepDebugContext | undefined;
   } = {},
 ): Promise<FormDiscoveryResult> {
-  const collector = new DiscoveryDebugCollector(browser_session.page.url());
+  const collector = new DiscoveryDebugCollector(
+    browser_session.page.url(),
+    Boolean(options.artifactDirectory),
+  );
   const result = await run_contact_form_discovery(
     browser_session,
     website_url,
@@ -86,6 +90,10 @@ export async function discover_contact_form(
     options.initialRoutes ??
       (await discover_contact_routes(browser_session.page)),
   );
+  await collector.captureInspection(browser_session.page, "final", {
+    requestedUrl: browser_session.page.url(),
+    navigationOutcome: "not_navigated",
+  });
   const finalized = await finalize_discovery_debug(
     browser_session.page,
     result,
@@ -131,6 +139,11 @@ async function run_contact_form_discovery(
   initial_routes: ContactRouteDiscoveryResult,
 ): Promise<FormDiscoveryResult> {
   const starting_url = initial_routes.startingUrl;
+  collector.recordDiscoveredRoutes(initial_routes.candidates);
+  await collector.captureInspection(browser_session.page, "initial", {
+    requestedUrl: starting_url,
+    navigationOutcome: "not_navigated",
+  });
   const visited_routes = new Set<string>();
   const initial_result = await discover_generic_contact_form(
     browser_session.page,
@@ -143,9 +156,15 @@ async function run_contact_form_discovery(
   }
 
   await return_to_starting_page_for_spa_retry(browser_session.page, starting_url);
-  await wait_for_discovery_readiness(browser_session.page);
+  const spa_readiness = await wait_for_discovery_readiness(browser_session.page);
   await dismiss_cookie_obstruction(browser_session.page);
+  await collector.captureInspection(browser_session.page, "spaRetry", {
+    requestedUrl: starting_url,
+    navigationOutcome: "loaded",
+    readiness: spa_readiness,
+  });
   const refreshed_routes = await discover_contact_routes(browser_session.page);
+  collector.recordDiscoveredRoutes(refreshed_routes.candidates);
 
   const retry_result = await discover_generic_contact_form(
     browser_session.page,
@@ -197,6 +216,9 @@ async function discover_generic_contact_form(
         label: link.label,
         score: link.score,
         result: "duplicate",
+        diagnosticResult: "duplicate",
+        inspectionCompleted: false,
+        pageQuality: "unknown",
         reason: "the same contact destination was already attempted",
       });
       continue;
@@ -205,19 +227,46 @@ async function discover_generic_contact_form(
     const interaction_started_at = new Date().toISOString();
     const interaction_before = await capture_discovery_interaction_state(page);
     try {
-      await page.goto(link.url, {
+      const response = await page.goto(link.url, {
         waitUntil: "domcontentloaded",
         timeout: NAVIGATION_TIMEOUT_MS,
       });
       contact_page_found = true;
-      collector.recordRoute({
+      const status = response?.status();
+      const final_url = page.url();
+      const diagnostic_result = status !== undefined && status >= 400
+        ? "http_error" as const
+        : canonical_discovery_url(final_url) !== canonical_url
+          ? "redirected" as const
+          : "loaded" as const;
+      const route_record: DiscoveryRouteAttemptDebug = {
         url: link.url,
         label: link.label,
         score: link.score,
         result: "opened",
-      });
-      await wait_for_discovery_readiness(page);
+        diagnosticResult: diagnostic_result,
+        committedUrl: safe_debug_url(response?.url() ?? final_url),
+        finalUrl: safe_debug_url(final_url),
+        redirectChain: response ? response.request().redirectedFrom()
+          ? [safe_debug_url(response.request().redirectedFrom()!.url()), safe_debug_url(response.url())]
+          : [safe_debug_url(response.url())] : [safe_debug_url(final_url)],
+        ...(status !== undefined ? { mainDocumentStatus: status } : {}),
+        pageQuality: status !== undefined && status >= 400 ? "error_page" : "usable",
+        inspectionCompleted: false,
+      };
+      collector.recordRoute(route_record);
+      const readiness = await wait_for_discovery_readiness(page);
       await dismiss_cookie_obstruction(page);
+      const before_candidate_count = collector.candidates.length;
+      const inspection_id = await collector.captureInspection(page, "rankedRoute", {
+        requestedUrl: link.url,
+        routeLabel: link.label,
+        routeScore: link.score,
+        ...(status !== undefined ? { responseStatus: status } : {}),
+        navigationOutcome: diagnostic_result,
+        readiness,
+      });
+      if (inspection_id) route_record.inspectionId = inspection_id;
       const interaction_after = await capture_discovery_interaction_state(page);
       collector.recordInteraction({
         label: link.label || link.url,
@@ -231,6 +280,8 @@ async function discover_generic_contact_form(
         page,
         collector,
       );
+      route_record.candidateCount = collector.candidates.length - before_candidate_count;
+      route_record.inspectionCompleted = true;
       if (linked_candidate?.classification === "complete") {
         return { contactPageFound: true, candidate: linked_candidate };
       }
@@ -246,12 +297,25 @@ async function discover_generic_contact_form(
       }
     } catch (error) {
       transport_failure_count += 1;
+      const reason = describe_error(error);
+      const timed_out = /timeout/i.test(reason);
       collector.recordRoute({
         url: link.url,
         label: link.label,
         score: link.score,
         result: "failed",
-        reason: describe_error(error),
+        diagnosticResult: timed_out ? "timed_out" : "navigation_failed",
+        finalUrl: safe_debug_url(page.url()),
+        pageQuality: "unknown",
+        inspectionCompleted: false,
+        reason,
+      });
+      await collector.captureInspection(page, "rankedRoute", {
+        requestedUrl: link.url,
+        routeLabel: link.label,
+        routeScore: link.score,
+        navigationOutcome: timed_out ? "timed_out" : "navigation_failed",
+        navigationError: reason,
       });
       const interaction_after = await capture_discovery_interaction_state(page);
       collector.recordInteraction({
@@ -275,6 +339,10 @@ async function discover_generic_contact_form(
         .catch(() => undefined);
       await wait_for_discovery_readiness(page);
       await dismiss_cookie_obstruction(page);
+      await collector.captureInspection(page, "progressionRevisit", {
+        requestedUrl: progression_fallback.url,
+        navigationOutcome: "loaded",
+      });
     }
     const candidate = await find_best_contact_form_candidate(
       page,
@@ -422,6 +490,7 @@ async function find_best_form_like_container(
           frameUrl: frame.url(),
           source: "generic",
           assessment,
+          structure: "formLikeContainer",
         });
         if (
           assessment.accepted &&
@@ -517,6 +586,7 @@ async function find_best_contact_form(
         frameUrl: frame.url(),
         source: "generic",
         assessment,
+        structure: "nativeForm",
       });
       if (assessment.accepted && assessment.classification !== "rejected") {
         candidates.push({
@@ -618,4 +688,16 @@ function canonical_discovery_url(value: string): string {
   url.hostname = url.hostname.toLowerCase();
   url.pathname = url.pathname.replace(/\/+$/, "") || "/";
   return url.toString();
+}
+
+function safe_debug_url(value: string): string {
+  try {
+    const url = new URL(value);
+    url.username = "";
+    url.password = "";
+    url.search = "";
+    return url.toString();
+  } catch {
+    return value.slice(0, 500);
+  }
 }

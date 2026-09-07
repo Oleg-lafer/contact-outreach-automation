@@ -762,6 +762,17 @@ function build_summary_lines(input: {
   artifactErrors: ArtifactError[];
   timelinePath: string;
 }): string[] {
+  const discovery = input.outcome?.discoveryDebug as {
+    inspectionAttempts?: unknown[]; candidates?: unknown[]; evidence?: unknown[];
+    diagnosticDisposition?: string; limits?: { omittedInspections?: number; omittedCandidates?: number; omittedControls?: number; omittedEvidenceNetworkRecords?: number; omittedScreenshots?: number };
+  } | undefined;
+  const discovery_omitted = discovery?.limits
+    ? (discovery.limits.omittedInspections ?? 0) +
+      (discovery.limits.omittedCandidates ?? 0) +
+      (discovery.limits.omittedControls ?? 0) +
+      (discovery.limits.omittedEvidenceNetworkRecords ?? 0) +
+      (discovery.limits.omittedScreenshots ?? 0)
+    : 0;
   return [
     "DEEP POPULATION-TO-SUBMISSION DEBUG",
     "===================================",
@@ -777,6 +788,11 @@ function build_summary_lines(input: {
     `Network events: ${input.counters.networkEvents}`,
     `Mutation events: ${input.counters.mutationEvents}`,
     `Screenshots: ${input.counters.screenshots}`,
+    `Discovery inspections: ${discovery?.inspectionAttempts?.length ?? 0}`,
+    `Discovery candidates: ${discovery?.candidates?.length ?? 0}`,
+    `Discovery evidence records: ${discovery?.evidence?.length ?? 0}`,
+    `Discovery diagnostic disposition: ${discovery?.diagnosticDisposition ?? "none"}`,
+    `Discovery omitted diagnostics: ${discovery_omitted}`,
     `Dropped/truncated: ${input.counters.truncatedEvents + input.counters.droppedNetworkEvents + input.counters.droppedMutationEvents + input.counters.droppedScreenshots}`,
     `Artifact errors: ${input.artifactErrors.length}`,
     `Artifact directory: ${input.artifactDirectory}`,

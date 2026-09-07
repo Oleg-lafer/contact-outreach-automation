@@ -7,6 +7,9 @@ import type {
   AttributionStatistics,
   CountAndSites,
   FormAnalyticsResult,
+  DiscoveryObservabilityAnalytics,
+  DiscoveryDiagnosticDisposition,
+  SiteEvidence,
   OutreachAnalyticsResult,
   ReconciliationResult,
   SiteClassification,
@@ -27,6 +30,56 @@ const countAndSites = (sites: SiteClassification[]): CountAndSites => ({
   count: sites.length,
   siteIds: sites.map((site) => site.id),
 });
+
+const groupObservabilityValues = (
+  sites: SiteEvidence[],
+  values: (site: SiteEvidence) => string[],
+): Record<string, CountAndSites> => {
+  const grouped = new Map<string, string[]>();
+  for (const site of sites) {
+    for (const value of new Set(values(site).filter(Boolean))) {
+      const ids = grouped.get(value) ?? [];
+      ids.push(site.id);
+      grouped.set(value, ids);
+    }
+  }
+  return Object.fromEntries([...grouped.entries()].sort(([a], [b]) => a.localeCompare(b))
+    .map(([key, siteIds]) => [key, { count: siteIds.length, siteIds }]));
+};
+
+const analyzeDiscoveryObservability = (sites: SiteEvidence[]): DiscoveryObservabilityAnalytics => {
+  const available = sites.filter((site) => site.discoveryObservability);
+  const dispositions = [
+    "confirmed_usable_form", "probable_missed_form", "possible_missed_form",
+    "complete_no_usable_form_observed", "inspection_incomplete",
+  ] as const satisfies readonly DiscoveryDiagnosticDisposition[];
+  return {
+    availableSites: { count: available.length, siteIds: available.map((site) => site.id) },
+    legacySites: { count: sites.length - available.length, siteIds: sites.filter((site) => !site.discoveryObservability).map((site) => site.id) },
+    dispositions: Object.fromEntries(dispositions.map((disposition) => {
+      const matching = available.filter((site) => site.discoveryObservability?.disposition === disposition);
+      return [disposition, { count: matching.length, siteIds: matching.map((site) => site.id) }];
+    })) as DiscoveryObservabilityAnalytics["dispositions"],
+    assessmentRules: groupObservabilityValues(available, (site) => [site.discoveryObservability?.assessmentRuleId ?? ""]),
+    routeOutcomes: groupObservabilityValues(available, (site) => site.discoveryObservability?.routeOutcomes ?? []),
+    pageQualities: groupObservabilityValues(available, (site) => site.discoveryObservability?.pageQualities ?? []),
+    candidateRules: groupObservabilityValues(available, (site) => site.discoveryObservability?.candidateRuleIds ?? []),
+    incompleteReasons: groupObservabilityValues(available, (site) => site.discoveryObservability?.incompleteReasons ?? []),
+    contradictions: groupObservabilityValues(available, (site) => site.discoveryObservability?.contradictions ?? []),
+    sites: available.map((site) => ({
+      siteId: site.id,
+      websiteUrl: site.websiteUrl,
+      disposition: site.discoveryObservability!.disposition,
+      assessmentRuleId: site.discoveryObservability!.assessmentRuleId,
+      inspectionIds: site.discoveryObservability!.inspectionIds,
+      candidateIds: site.discoveryObservability!.candidateIds,
+      evidenceIds: site.discoveryObservability!.evidenceIds,
+      screenshotPaths: site.discoveryObservability!.screenshotPaths,
+      artifactPath: site.discoveryObservability!.artifactPath,
+      contradictions: site.discoveryObservability!.contradictions,
+    })),
+  };
+};
 
 const buildStageStatistics = (stage: TerminalStage, sites: SiteClassification[]): StageStatistics => {
   const notApplicable = sites.filter((site) => site.stageStates[stage] === "not_applicable");
@@ -157,7 +210,13 @@ export const analyzeRun = async (requestedPath: string, options: AnalyzeOptions 
   const stages = STAGES.map((stage) => buildStageStatistics(stage, sites));
   const reconciliation = reconcile(sites, counts, stages);
   const signalStatistics = analyzeFormSubmissionSignals(artifacts.sites);
+  const discoveryObservability = analyzeDiscoveryObservability(artifacts.sites);
   const dataQualityWarnings = [...artifacts.warnings, ...signalStatistics.dataQualityWarnings];
+  for (const [contradiction, occurrence] of Object.entries(discoveryObservability.contradictions)) {
+    dataQualityWarnings.push(
+      `Discovery observability contradiction ${contradiction}: ${occurrence.count} site(s).`,
+    );
+  }
   if (!reconciliation.processedEqualsStates) dataQualityWarnings.push("Processed-site state totals do not reconcile.");
   if (!reconciliation.stoppedEqualsAttributions) dataQualityWarnings.push("Stopped-site attribution totals do not reconcile.");
   if (!reconciliation.uniqueSiteClassifications) dataQualityWarnings.push("Duplicate site IDs were classified.");
@@ -202,6 +261,7 @@ export const analyzeRun = async (requestedPath: string, options: AnalyzeOptions 
     counts,
     finalAttribution: buildFinalAttribution(sites, counts),
     signalStatistics,
+    discoveryObservability,
     stages,
     sites,
     errors: artifacts.errors,

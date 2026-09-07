@@ -7,6 +7,8 @@ import type {
   DiscoveryPageSignals,
   NetworkDebugRecord,
   PresenceEvidenceStrength,
+  DiscoveryInspectionAttemptDebug,
+  DiscoveryNetworkEvidenceDebug,
 } from "../../shared_files_forms/forms_types_(Support).js";
 
 const FORM_PROVIDER_PATTERN =
@@ -271,6 +273,59 @@ export function create_discovery_outcome(options: {
     presence_strength = "none";
   }
 
+  evidence.forEach((record, index) => {
+    record.evidenceId = `evidence-${index + 1}`;
+    if (!record.inspectionId && record.url && debug?.inspectionAttempts) {
+      const inspection_id = debug.inspectionAttempts.find(
+        (inspection) => safe_url(inspection.finalUrl) === safe_url(record.url ?? ""),
+      )?.inspectionId;
+      if (inspection_id) record.inspectionId = inspection_id;
+    }
+  });
+  if (debug) {
+    debug.evidence = deduplicate_evidence(evidence);
+    debug.limitations = unique_limitations;
+    debug.strongestEvidence = strongest_evidence(evidence) ?? "none";
+    debug.assessmentRuleId = assessment_rule_id(assessment);
+    debug.assessmentExplanation = discovery_description(
+      assessment,
+      discoveryResult.reason,
+      discoveryResult.candidate?.frame.url() || finalUrl,
+    );
+    debug.evidenceNetworkRecords = network_evidence_debug(
+      networkRecords,
+      debug.evidence,
+      debug.inspectionAttempts ?? [],
+      debug.limits?.maxEvidenceNetworkRecords ?? 10,
+    );
+    if (debug.limits) {
+      const matching_count = debug.evidence.filter((record) => record.kind === "formLikeNetwork").length;
+      debug.limits.omittedEvidenceNetworkRecords = Math.max(0, matching_count - debug.evidenceNetworkRecords.length);
+    }
+    if (debug.coverageAssessment) {
+      debug.coverageAssessment.incompleteReasons = [
+        ...new Set([...debug.coverageAssessment.incompleteReasons, ...unique_limitations]),
+      ];
+      debug.coverageAssessment.completeEnoughForNoFormConclusion =
+        !discoveryResult.candidate && debug.coverageAssessment.incompleteReasons.length === 0;
+    }
+    debug.diagnosticDisposition = discoveryResult.candidate
+      ? "confirmed_usable_form"
+      : coverage === "partial"
+        ? "inspection_incomplete"
+        : assessment === "strong_form_evidence"
+          ? "probable_missed_form"
+          : assessment === "possible_form_evidence"
+            ? "possible_missed_form"
+            : "complete_no_usable_form_observed";
+    for (const record of debug.evidence) {
+      const inspection = debug.inspectionAttempts?.find((item) => item.inspectionId === record.inspectionId);
+      if (inspection && record.evidenceId && !inspection.evidenceIds.includes(record.evidenceId)) {
+        inspection.evidenceIds.push(record.evidenceId);
+      }
+    }
+  }
+
   return {
     websiteUrl,
     assessment,
@@ -292,6 +347,45 @@ export function create_discovery_outcome(options: {
     limitations: unique_limitations,
     ...(debug ? { discoveryDebug: debug } : {}),
   };
+}
+
+function assessment_rule_id(assessment: FormDiscoveryOutcome["assessment"]): string {
+  switch (assessment) {
+    case "confirmed_form_present": return "DISCOVERY-EVIDENCE-CONFIRMED-FORM";
+    case "strong_form_evidence": return "DISCOVERY-EVIDENCE-STRONG-INDIRECT";
+    case "possible_form_evidence": return "DISCOVERY-EVIDENCE-POSSIBLE-INDIRECT";
+    case "contact_channel_without_form": return "DISCOVERY-EVIDENCE-CHANNEL-NO-FORM";
+    case "no_form_observed_after_limited_search": return "DISCOVERY-EVIDENCE-INCOMPLETE";
+    case "site_inspection_blocked": return "DISCOVERY-EVIDENCE-BLOCKED";
+    default: return "DISCOVERY-EVIDENCE-COMPLETE-NO-FORM";
+  }
+}
+
+function network_evidence_debug(
+  records: NetworkDebugRecord[],
+  evidence: DiscoveryEvidenceRecord[],
+  inspections: DiscoveryInspectionAttemptDebug[],
+  limit: number,
+): DiscoveryNetworkEvidenceDebug[] {
+  const form_evidence = evidence.filter((record) => record.kind === "formLikeNetwork" && record.url);
+  return form_evidence.slice(0, limit).flatMap((record) => {
+    const source = records.find((candidate) => safe_url(candidate.url) === safe_url(record.url ?? ""));
+    if (!source || source.status === undefined) return [];
+    const inspection = inspections.find((candidate) =>
+      source.startedAt >= candidate.readiness.startedAt && source.startedAt <= candidate.readiness.finishedAt,
+    );
+    return [{
+      evidenceId: record.evidenceId ?? "",
+      ...(inspection ? { inspectionId: inspection.inspectionId } : {}),
+      url: safe_url(source.url),
+      resourceType: source.resourceType,
+      status: source.status,
+      providerMatched: FORM_PROVIDER_PATTERN.test(source.url),
+      correlationReason: inspection ? "request occurred during inspection readiness window" : "matched accumulated discovery network evidence",
+      strength: record.strength,
+      ruleId: FORM_PROVIDER_PATTERN.test(source.url) ? "DISCOVERY-NETWORK-PROVIDER" : "DISCOVERY-NETWORK-SEMANTIC",
+    }];
+  });
 }
 
 export function create_blocked_discovery_outcome(

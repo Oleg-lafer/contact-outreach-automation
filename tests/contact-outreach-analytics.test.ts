@@ -137,7 +137,7 @@ test("aggregate reports produce independent forms, email, and meeting evaluation
   );
 
   const { result } = await analyzeRun(runPath, { writeOutputs: false });
-  assert.equal(result.schemaVersion, 4);
+  assert.equal(result.schemaVersion, 5);
   assert.equal(result.planned, 1);
   assert.equal(result.channels.forms.counts.completed, 1);
   assert.equal(result.channels.forms.sites[0]?.status, "SUCCESS");

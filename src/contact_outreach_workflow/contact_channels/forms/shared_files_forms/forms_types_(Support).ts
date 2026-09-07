@@ -240,9 +240,20 @@ export interface ContactFormAssessmentSignals {
 }
 
 export interface DiscoveryFormCandidateDebug {
+  candidateId?: string;
+  inspectionId?: string;
   url: string;
   frameUrl: string;
   source: ContactFormCandidateSource | "deterministic";
+  structure?: "nativeForm" | "formLikeContainer" | "unknown";
+  domPathHash?: string;
+  tagName?: string;
+  action?: string;
+  method?: string;
+  contextExcerpt?: string;
+  controls?: DiscoveryCandidateControlDebug[];
+  ruleId?: string;
+  scoreContributions?: Array<{ ruleId: string; score: number }>;
   score: number;
   classification: ContactFormClassification | "rejected";
   accepted: boolean;
@@ -250,12 +261,122 @@ export interface DiscoveryFormCandidateDebug {
   signals: ContactFormAssessmentSignals;
 }
 
+export interface DiscoveryCandidateControlDebug {
+  tagName: string;
+  type: string;
+  name: string;
+  label: string;
+  placeholder: string;
+  required: boolean;
+  disabled: boolean;
+  readOnly: boolean;
+  visible: boolean;
+  width: number;
+  height: number;
+}
+
 export interface DiscoveryRouteAttemptDebug {
+  inspectionId?: string;
   url: string;
   label: string;
   score: number;
   result: "opened" | "failed" | "duplicate" | "blocked";
+  diagnosticResult?: "loaded" | "http_error" | "redirected" | "timed_out" | "navigation_failed" | "duplicate" | "blocked";
+  committedUrl?: string;
+  finalUrl?: string;
+  redirectChain?: string[];
+  mainDocumentStatus?: number;
+  pageQuality?: "usable" | "error_page" | "empty" | "unknown";
+  inspectionCompleted?: boolean;
+  candidateCount?: number;
   reason?: string;
+}
+
+export type DiscoveryInspectionPhase =
+  | "initial"
+  | "rankedRoute"
+  | "spaRetry"
+  | "progressionRevisit"
+  | "aiFallback"
+  | "final";
+
+export interface DiscoveryReadinessDebug {
+  startedAt: string;
+  finishedAt: string;
+  elapsedMs: number;
+  domContentLoaded: boolean;
+  visibleContentReady: boolean;
+  networkIdle: "reached" | "timed_out" | "not_checked";
+  readyState: string;
+  stateChangedDuringSettle: boolean;
+  error?: string;
+}
+
+export interface DiscoveryInspectionAttemptDebug {
+  inspectionId: string;
+  phase: DiscoveryInspectionPhase;
+  capturedAt: string;
+  requestedUrl: string;
+  committedUrl: string;
+  finalUrl: string;
+  redirectChain: string[];
+  sameOrigin: boolean;
+  navigationOutcome: "loaded" | "http_error" | "redirected" | "timed_out" | "navigation_failed" | "not_navigated";
+  mainDocumentStatus?: number;
+  pageQuality: "usable" | "error_page" | "empty" | "unknown";
+  routeLabel?: string;
+  routeScore?: number;
+  navigationError?: string;
+  readiness: DiscoveryReadinessDebug;
+  title: string;
+  language: string;
+  headingExcerpt: string;
+  contextExcerpt: string;
+  errorPageIndicators: string[];
+  visibleFormCount: number;
+  formLikeContainerCount: number;
+  visibleDialogCount: number;
+  frameCount: number;
+  pageSignals: DiscoveryPageSignals;
+  candidateIds: string[];
+  evidenceIds: string[];
+  screenshotPath?: string;
+  stateFingerprint: string;
+}
+
+export interface DiscoveryCoverageAssessment {
+  routesDiscovered: number;
+  routesAttempted: number;
+  routesSuccessfullyInspected: number;
+  routesSkipped: number;
+  accessibleFrames: number;
+  inaccessibleFrames: number;
+  revealControlsObserved: number;
+  revealControlsExercised: number;
+  incompleteReasons: string[];
+  completeEnoughForNoFormConclusion: boolean;
+}
+
+export type DiscoveryDiagnosticDisposition =
+  | "confirmed_usable_form"
+  | "probable_missed_form"
+  | "possible_missed_form"
+  | "complete_no_usable_form_observed"
+  | "inspection_incomplete";
+
+export interface DiscoveryDiagnosticLimits {
+  maxInspections: number;
+  maxCandidatesPerInspection: number;
+  maxCandidatesTotal: number;
+  maxControlsPerCandidate: number;
+  maxEvidenceNetworkRecords: number;
+  maxContextLength: number;
+  maxScreenshots: number;
+  omittedInspections: number;
+  omittedCandidates: number;
+  omittedControls: number;
+  omittedEvidenceNetworkRecords: number;
+  omittedScreenshots: number;
 }
 
 export interface DiscoveryFrameDebug {
@@ -275,6 +396,7 @@ export interface DiscoveryDebugSummary {
   reportPath: string;
   artifactDirectory: string;
   screenshotPath?: string;
+  screenshotPaths?: string[];
   startingUrl: string;
   finalUrl: string;
   finalClassification: string;
@@ -283,6 +405,16 @@ export interface DiscoveryDebugSummary {
   aiActions: DiscoveryAiActionDebug[];
   frames: DiscoveryFrameDebug[];
   interactions?: DiscoveryInteractionDebug[];
+  inspectionAttempts?: DiscoveryInspectionAttemptDebug[];
+  evidence?: DiscoveryEvidenceRecord[];
+  evidenceNetworkRecords?: DiscoveryNetworkEvidenceDebug[];
+  limitations?: string[];
+  assessmentRuleId?: string;
+  assessmentExplanation?: string;
+  strongestEvidence?: PresenceEvidenceStrength;
+  coverageAssessment?: DiscoveryCoverageAssessment;
+  diagnosticDisposition?: DiscoveryDiagnosticDisposition;
+  limits?: DiscoveryDiagnosticLimits;
 }
 
 export interface DiscoveryInteractionState {
@@ -311,11 +443,26 @@ export type DiscoveryEvidenceKind =
   | "inspectionLimitation";
 
 export interface DiscoveryEvidenceRecord {
+  evidenceId?: string;
+  inspectionId?: string;
+  ruleId?: string;
   kind: DiscoveryEvidenceKind;
   strength: Exclude<PresenceEvidenceStrength, "none">;
   description: string;
   url?: string;
   status?: number;
+}
+
+export interface DiscoveryNetworkEvidenceDebug {
+  evidenceId: string;
+  inspectionId?: string;
+  url: string;
+  resourceType: string;
+  status: number;
+  providerMatched: boolean;
+  correlationReason: string;
+  strength: Exclude<PresenceEvidenceStrength, "none">;
+  ruleId: string;
 }
 
 export interface DiscoveryPageSignals {
