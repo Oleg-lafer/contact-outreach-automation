@@ -8,6 +8,7 @@ import type {
   BrowserStageRunSummary,
   ContactOutreachOutcome,
 } from "./outreach_types_(Support).js";
+import { redact_diagnostic_text } from "./diagnostic_redaction_(Support).js";
 
 const CATEGORIES: BrowserFailureCategory[] = [
   "OUR_AUTOMATION",
@@ -165,34 +166,31 @@ export function classify_browser_stage_failure(
     );
   }
 
-  if (result.content.meaningfulContent && result.content.accessRestrictionIndicators.length === 0) {
+  const status = result.mainDocumentStatus;
+  if (status === 401 || status === 403 || status === 429) {
     return failed(
-      "OUR_AUTOMATION",
-      "OUR_AUTOMATION",
-      "usable_navigation_misclassified_as_failure",
+      "ACCESS_RESTRICTION",
+      "ACCESS_RESTRICTION",
+      `http_${status}`,
       "HIGH",
-      "BRW-OUR-MISCLASSIFIED-USABLE-CONTENT",
-      "Our browser-stage decision marked a healthy page with meaningful usable content as failed.",
-      ["meaningfulContent=true", `mainDocumentStatus=${result.mainDocumentStatus ?? "none"}`],
+      "BRW-DESTINATION-ACCESS-RESTRICTION",
+      `The destination responded to the main document with HTTP ${status}.`,
+      [
+        `mainDocumentStatus=${status}`,
+        ...result.content.accessRestrictionIndicators,
+      ],
       "DIRECT",
     );
   }
-
-  const status = result.mainDocumentStatus;
-  if (status === 401 || status === 403 || status === 429 || result.content.accessRestrictionIndicators.length > 0) {
+  if (status !== undefined && status >= 500) {
     return failed(
-      "ACCESS_RESTRICTION",
-      "ACCESS_RESTRICTION",
-      status ? `http_${status}` : "antibot_or_captcha_challenge",
+      "DESTINATION_WEBSITE",
+      "DESTINATION_WEBSITE",
+      "http_5xx",
       "HIGH",
-      "BRW-DESTINATION-ACCESS-RESTRICTION",
-      status
-        ? `The destination responded to the main document with HTTP ${status}.`
-        : "The destination was reached but presented an access-control challenge.",
-      [
-        ...(status ? [`mainDocumentStatus=${status}`] : []),
-        ...result.content.accessRestrictionIndicators,
-      ],
+      "BRW-DESTINATION-HTTP-5XX",
+      `The destination returned HTTP ${status} for the main document.`,
+      [`mainDocumentStatus=${status}`],
       "DIRECT",
     );
   }
@@ -232,18 +230,6 @@ export function classify_browser_stage_failure(
       "BRW-DESTINATION-REDIRECT-LOOP",
       "The destination produced a redirect loop.",
       [`redirectCount=${result.redirectChain.length}`],
-      "DIRECT",
-    );
-  }
-  if (status !== undefined && status >= 500) {
-    return failed(
-      "DESTINATION_WEBSITE",
-      "DESTINATION_WEBSITE",
-      "http_5xx",
-      "HIGH",
-      "BRW-DESTINATION-HTTP-5XX",
-      `The destination returned HTTP ${status} for the main document.`,
-      [`mainDocumentStatus=${status}`],
       "DIRECT",
     );
   }
@@ -299,7 +285,7 @@ export function classify_browser_stage_failure(
       ["DNS/TCP/TLS phase timing", "independent destination reachability", "progress after the deadline"],
     );
   }
-  if (/err_connection_(reset|closed|aborted)/.test(text)) {
+  if (/err_connection_(reset|closed|aborted)|err_http2_|err_empty_response/.test(text)) {
     return failed(
       "NETWORK_INFRASTRUCTURE",
       "NETWORK_INFRASTRUCTURE",
@@ -311,6 +297,59 @@ export function classify_browser_stage_failure(
       "INFERRED",
       "The evidence cannot identify whether the destination, an intermediary, or the client network reset the connection.",
       ["packet-level reset origin"],
+    );
+  }
+  if ((status === undefined || (status >= 200 && status < 300)) && result.content.accessRestrictionIndicators.length > 0) {
+    return failed(
+      "ACCESS_RESTRICTION",
+      "ACCESS_RESTRICTION",
+      "antibot_or_captcha_challenge",
+      "HIGH",
+      "BRW-DESTINATION-CONTENT-ACCESS-RESTRICTION",
+      "The destination was reached but presented an access-control challenge.",
+      [...result.content.accessRestrictionIndicators],
+      "DIRECT",
+    );
+  }
+  if (status !== undefined && status >= 400 && status < 500) {
+    return failed(
+      "DESTINATION_WEBSITE",
+      "DESTINATION_WEBSITE",
+      `http_${status}`,
+      "HIGH",
+      "BRW-DESTINATION-HTTP-4XX",
+      `The destination returned HTTP ${status} for the main document.`,
+      [`mainDocumentStatus=${status}`],
+      "DIRECT",
+    );
+  }
+  if (result.pageQuality !== "USABLE") {
+    const subcategory = page_quality_subcategory(result.pageQuality, status);
+    return failed(
+      result.pageQuality === "INSPECTION_FAILED" ? "OUR_AUTOMATION" : "DESTINATION_WEBSITE",
+      result.pageQuality === "INSPECTION_FAILED" ? "OUR_AUTOMATION" : "DESTINATION_WEBSITE",
+      subcategory,
+      result.pageQuality === "UNUSABLE" ? "MEDIUM" : "HIGH",
+      `BRW-PAGE-QUALITY-${result.pageQuality}`,
+      page_quality_reason(result.pageQuality, status),
+      [
+        `pageQuality=${result.pageQuality}`,
+        ...(status !== undefined ? [`mainDocumentStatus=${status}`] : []),
+        ...result.pageQualityEvidence,
+      ],
+      "DIRECT",
+    );
+  }
+  if (result.content.meaningfulContent && result.content.accessRestrictionIndicators.length === 0) {
+    return failed(
+      "OUR_AUTOMATION",
+      "OUR_AUTOMATION",
+      "usable_navigation_misclassified_as_failure",
+      "HIGH",
+      "BRW-OUR-MISCLASSIFIED-USABLE-CONTENT",
+      "Our browser-stage decision marked a healthy page with meaningful usable content as failed.",
+      ["meaningfulContent=true", `mainDocumentStatus=${status ?? "none"}`],
+      "DIRECT",
     );
   }
   return failed(
@@ -402,11 +441,27 @@ export function create_browser_stage_run_summary(
   const loadedAfterTimeout = stages.filter(
     (entry) => entry.browserStage.outcome === "LOADED_AFTER_TIMEOUT",
   ).length;
+  const usablePages = stages.filter((entry) =>
+    (entry.browserStage.outcome === "LOADED" || entry.browserStage.outcome === "LOADED_AFTER_TIMEOUT") &&
+    entry.browserStage.mainDocumentStatus !== undefined &&
+    entry.browserStage.mainDocumentStatus >= 200 && entry.browserStage.mainDocumentStatus < 300 &&
+    entry.browserStage.pageQuality === "USABLE"
+  ).length;
+  const transportLoaded = stages.filter((entry) => entry.browserStage.mainDocumentReceived).length;
+  const recoveryEligible = stages.filter((entry) => entry.browserStage.recoveryEligible).length;
+  const recoveredUsable = stages.filter((entry) =>
+    entry.browserStage.recovered && entry.browserStage.pageQuality === "USABLE"
+  ).length;
+  const falseLoaded = stages.filter((entry) =>
+    (entry.browserStage.outcome === "LOADED" || entry.browserStage.outcome === "LOADED_AFTER_TIMEOUT") &&
+    entry.browserStage.pageQuality !== "USABLE"
+  ).length;
+  const totalWebsites = outcomes.length + additionalExclusions.length;
   const categorySum = Object.values(categoryCounts).reduce((sum, count) => sum + count, 0);
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     generatedAt: generatedAt.toISOString(),
-    totalWebsites: outcomes.length + additionalExclusions.length,
+    totalWebsites,
     entered,
     loaded,
     loadedAfterTimeout,
@@ -417,6 +472,17 @@ export function create_browser_stage_run_summary(
     categoryPercentagesOfEntrants,
     subcategoryCounts,
     ourAutomationSubcategoryCounts,
+    kpis: {
+      usablePages,
+      usableBrowserStageSuccessRate: percentage(usablePages, totalWebsites),
+      transportLoaded,
+      transportLoadRate: percentage(transportLoaded, totalWebsites),
+      recoveryEligible,
+      recoveredUsable,
+      recoveryYield: percentage(recoveredUsable, recoveryEligible),
+      falseLoaded,
+      preBrowser: preBrowserExclusions.length,
+    },
     ledger,
     preBrowserExclusions,
     reconciliation: {
@@ -476,6 +542,14 @@ export function format_browser_stage_summary(summary: BrowserStageRunSummary): s
     `Browser-stage failures: ${summary.failures}`,
     `Did not enter browser stage: ${summary.notEntered}`,
     "",
+    "BROWSER KPI",
+    `Usable pages: ${summary.kpis.usablePages} (${summary.kpis.usableBrowserStageSuccessRate.toFixed(2)}% of all selected websites)`,
+    `Transport loaded: ${summary.kpis.transportLoaded} (${summary.kpis.transportLoadRate.toFixed(2)}% of all selected websites)`,
+    `Recovery eligible: ${summary.kpis.recoveryEligible}`,
+    `Recovered usable: ${summary.kpis.recoveredUsable} (${summary.kpis.recoveryYield.toFixed(2)}% recovery yield)`,
+    `False loaded: ${summary.kpis.falseLoaded}`,
+    `Pre-browser: ${summary.kpis.preBrowser}`,
+    "",
     "FAILURE CATEGORIES",
     ...CATEGORIES.map((category) =>
       `${category}: ${summary.categoryCounts[category]} (${summary.categoryPercentagesOfFailures[category].toFixed(2)}% of browser failures; ${summary.categoryPercentagesOfEntrants[category].toFixed(2)}% of entrants)`
@@ -521,6 +595,7 @@ function format_browser_stage_failure_csv(summary: BrowserStageRunSummary): stri
       "meaningful_content", "reason", "diagnostic_artifact_path",
       "classification_basis", "strongest_supporting_evidence", "strongest_evidence_against",
       "missing_evidence", "timeout_source", "last_progress_at", "last_progress_type",
+      "attempt_count", "selected_candidate_kind", "page_quality", "recovery_eligible", "recovered",
     ],
     ...summary.ledger.map(({ siteId, websiteUrl, browserStage }) => [
       siteId,
@@ -545,6 +620,11 @@ function format_browser_stage_failure_csv(summary: BrowserStageRunSummary): stri
       browserStage.timeoutSource ?? "",
       browserStage.lastProgressAt ?? "",
       browserStage.lastProgressType ?? "",
+      browserStage.navigationAttempts.length,
+      browserStage.selectedCandidateKind,
+      browserStage.pageQuality,
+      browserStage.recoveryEligible,
+      browserStage.recovered,
     ]),
   ];
   return `${rows.map((row) => row.map(csv_value).join(",")).join("\n")}\n`;
@@ -559,20 +639,51 @@ export function redact_browser_text(
   redactionValues: readonly string[],
   maxLength: number,
 ): string {
-  let output = value;
-  for (const secret of [...redactionValues].filter((item) => item.trim().length > 1).sort((a, b) => b.length - a.length)) {
-    output = output.replace(new RegExp(escape_regexp(secret), "gi"), "[redacted-contact-value]");
-  }
-  output = output
-    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[redacted-email]")
-    .replace(/(?:\+\d[\d\s().-]{6,}\d|\(\d{2,4}\)[\d\s.-]{4,}\d|\d{2,4}[ -]\d{3,4}[ -]\d{3,4})/g, "[redacted-phone]");
-  return output.length > maxLength ? `${output.slice(0, maxLength)}...[truncated]` : output;
+  return redact_diagnostic_text(value, redactionValues, maxLength);
 }
 
+function percentage(numerator: number, denominator: number): number {
+  return denominator === 0 ? 0 : Number(((numerator / denominator) * 100).toFixed(2));
+}
+
+function page_quality_subcategory(
+  quality: BrowserStageResult["pageQuality"],
+  status: number | undefined,
+): string {
+  if (status === 204) return "http_204_no_content";
+  switch (quality) {
+    case "EMPTY": return "empty_page";
+    case "PARKED": return "parked_domain";
+    case "EXPIRED": return "expired_site";
+    case "SITE_ERROR": return "destination_error_page";
+    case "INSECURE_TRANSPORT": return "insecure_transport";
+    case "INSPECTION_FAILED": return "page_inspection_failed";
+    case "HTTP_ERROR": return "http_error_page";
+    case "ACCESS_RESTRICTED": return "antibot_or_captcha_challenge";
+    case "UNUSABLE": return "unusable_page";
+    case "USABLE": return "usable_page";
+  }
+}
+
+function page_quality_reason(
+  quality: BrowserStageResult["pageQuality"],
+  status: number | undefined,
+): string {
+  if (status === 204) return "The destination returned HTTP 204 with no page content.";
+  const reasons: Record<BrowserStageResult["pageQuality"], string> = {
+    USABLE: "The page is usable.",
+    ACCESS_RESTRICTED: "The page presented an access restriction.",
+    HTTP_ERROR: "The page returned or rendered an HTTP error.",
+    EMPTY: "The destination rendered an empty page.",
+    PARKED: "The destination appears to be a parked domain.",
+    EXPIRED: "The destination indicates that the site or domain expired.",
+    SITE_ERROR: "The destination rendered a deterministic site error page.",
+    INSECURE_TRANSPORT: "The page is not safe for form population or submission.",
+    INSPECTION_FAILED: "Our browser could not inspect the committed page.",
+    UNUSABLE: "The committed page did not contain meaningful usable content.",
+  };
+  return reasons[quality];
+}
 function phase_subcategory(phase: BrowserStageResult["phase"]): string {
   return phase.toLowerCase();
-}
-
-function escape_regexp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

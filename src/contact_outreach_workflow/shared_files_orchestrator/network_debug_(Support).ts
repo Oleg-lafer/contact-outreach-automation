@@ -1,5 +1,6 @@
 import type { Page, Request, Response } from "playwright";
 import type { NetworkDebugRecord, NetworkDebugRecorder } from "./outreach_types_(Support).js";
+import { redact_diagnostic_text, redact_diagnostic_url } from "./diagnostic_redaction_(Support).js";
 
 export function start_network_debug_recorder(
   page: Page,
@@ -13,7 +14,7 @@ export function start_network_debug_recorder(
     const record: NetworkDebugRecord = {
       id: records.length + 1,
       method: request.method(),
-      url: redact_url(request.url(), redaction_values),
+      url: redact_diagnostic_url(request.url(), redaction_values),
       resourceType: request.resourceType(),
       startedAt: new Date().toISOString(),
       ...(post_data
@@ -84,7 +85,7 @@ function describe_post_data_schema(
       byteLength: Buffer.byteLength(value),
       fields: [...new URLSearchParams(value).entries()].slice(0, 200).map(
         ([name, field_value]) => ({
-          name: redact_text(name, redaction_values, 200),
+          name: redact_diagnostic_text(name, redaction_values, 200),
           kind: "string",
           length: field_value.length,
         }),
@@ -104,7 +105,7 @@ function describe_post_data_schema(
   } else {
     schema = { encoding: "opaque", byteLength: Buffer.byteLength(value) };
   }
-  return redact_text(JSON.stringify(schema), redaction_values, 2_000);
+  return redact_diagnostic_text(JSON.stringify(schema), redaction_values, 2_000);
 }
 
 function flatten_json_fields(
@@ -129,68 +130,4 @@ function flatten_json_fields(
     output.push({ path, kind: value === null ? "null" : typeof value });
   }
   return output;
-}
-
-function redact_url(value: string, redaction_values: string[]): string {
-  try {
-    const parsed_url = new URL(value);
-    for (const [key, parameter_value] of parsed_url.searchParams.entries()) {
-      if (
-        is_sensitive_key(key) ||
-        contains_redaction_value(parameter_value, redaction_values)
-      ) {
-        parsed_url.searchParams.set(key, "[redacted]");
-      }
-    }
-    const serialized_url = parsed_url
-      .toString()
-      .replace(/%5Bredacted%5D/gi, "[redacted]");
-    return redact_text(serialized_url, redaction_values, 2_000);
-  } catch {
-    return redact_text(value, redaction_values, 2_000);
-  }
-}
-
-function redact_text(
-  value: string,
-  redaction_values: string[],
-  max_length: number,
-): string {
-  let redacted = value;
-  for (const secret of redaction_values
-    .filter((candidate) => candidate.trim().length > 1)
-    .sort((left, right) => right.length - left.length)) {
-    redacted = redacted.replace(new RegExp(escape_regexp(secret), "g"), "[redacted]");
-  }
-
-  redacted = redacted
-    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[redacted-email]")
-    .replace(
-      /(?:\+\d[\d\s().-]{6,}\d|\(\d{2,4}\)[\d\s.-]{4,}\d|\d{2,4}[ -]\d{3,4}[ -]\d{3,4})/g,
-      "[redacted-phone]",
-    );
-
-  return redacted.length > max_length
-    ? `${redacted.slice(0, max_length)}...[truncated]`
-    : redacted;
-}
-
-function contains_redaction_value(
-  value: string,
-  redaction_values: string[],
-): boolean {
-  return redaction_values.some(
-    (redaction_value) =>
-      redaction_value.trim().length > 1 && value.includes(redaction_value),
-  );
-}
-
-function is_sensitive_key(key: string): boolean {
-  return /email|phone|name|message|token|auth|password|secret|key|captcha|session|cookie/i.test(
-    key,
-  );
-}
-
-function escape_regexp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

@@ -138,6 +138,20 @@ test("deep-debug recorder and workflow artifacts", async (context) => {
     assert.equal(outcome.submissionConfirmed, true);
     assert.ok(outcome.deepDebug);
     assert.equal(outcome.deepDebug.artifactErrorCount, 0);
+    const browser_stage = JSON.parse(await readFile(
+      join(outcome.deepDebug.artifactDirectory, "browser", "browser-stage.json"),
+      "utf8",
+    )) as {
+      schemaVersion: number;
+      navigationAttempts: Array<{ candidateKind: string }>;
+      selectedCandidateKind: string;
+      securityEvidence: { formSubmissionAllowed: boolean; cleartext: boolean };
+    };
+    assert.equal(browser_stage.schemaVersion, 3);
+    assert.deepEqual(browser_stage.navigationAttempts.map((attempt) => attempt.candidateKind), ["ORIGINAL"]);
+    assert.equal(browser_stage.selectedCandidateKind, "ORIGINAL");
+    assert.equal(browser_stage.securityEvidence.formSubmissionAllowed, true);
+    assert.equal(browser_stage.securityEvidence.cleartext, true);
 
     const timeline = await read_timeline(outcome.deepDebug.timelinePath);
     assert.equal(outcome.deepDebug.timelinePath.endsWith("timeline.jsonl.gz"), true);

@@ -105,6 +105,7 @@ const parseBrowserStageSection = (section: string): BrowserStageArtifactEvidence
   const status = /^\d+$/.test(statusText) ? Number.parseInt(statusText, 10) : null;
   const outcome = parseField(section, "Outcome");
   const category = parseField(section, "Classification");
+  const attemptCount = Number(parseField(section, "Navigation attempts"));
   return {
     schemaVersion: 1,
     entered: parseYesNo(parseField(section, "Entered")) ?? false,
@@ -137,17 +138,28 @@ const parseBrowserStageSection = (section: string): BrowserStageArtifactEvidence
     timeoutSource: parseField(section, "Timeout source"),
     lastProgressAt: parseField(section, "Last progress at"),
     lastProgressType: parseField(section, "Last progress type"),
+    attemptCount: Number.isFinite(attemptCount) && attemptCount > 0 ? Math.floor(attemptCount) : 1,
+    selectedCandidateKind: parseField(section, "Selected navigation candidate"),
+    pageQuality: parseField(section, "Page quality"),
+    recoveryEligible: parseYesNo(parseField(section, "Recovery eligible")) ?? false,
+    recovered: parseYesNo(parseField(section, "Recovered navigation")) ?? false,
     artifactPath: parseField(section, "Browser-stage artifact"),
     source: "structured_text",
   };
 };
 
 const browserStageFromJson = (value: unknown): BrowserStageArtifactEvidence | undefined => {
-  if (!isObject(value) || (value.schemaVersion !== 1 && value.schemaVersion !== 2)) return undefined;
+  if (!isObject(value) || (value.schemaVersion !== 1 && value.schemaVersion !== 2 && value.schemaVersion !== 3)) {
+    return undefined;
+  }
   const content = isObject(value.content) ? value.content : {};
   const health = isObject(value.health) ? value.health : {};
   const outcome = stringValue(value.outcome);
   const category = stringValue(value.category);
+  const navigationAttempts = Array.isArray(value.navigationAttempts) ? value.navigationAttempts : [];
+  const attemptCount = navigationAttempts.length > 0
+    ? navigationAttempts.length
+    : numberValue(value.attempt) ?? 1;
   return {
     schemaVersion: value.schemaVersion,
     entered: Boolean(value.entered),
@@ -182,6 +194,13 @@ const browserStageFromJson = (value: unknown): BrowserStageArtifactEvidence | un
     timeoutSource: stringValue(value.timeoutSource),
     lastProgressAt: stringValue(value.lastProgressAt),
     lastProgressType: stringValue(value.lastProgressType),
+    attemptCount,
+    selectedCandidateKind: value.schemaVersion === 3 ? stringValue(value.selectedCandidateKind) : "",
+    pageQuality: value.schemaVersion === 3 ? stringValue(value.pageQuality) : "",
+    recoveryEligible: value.schemaVersion === 3 ? booleanValue(value.recoveryEligible) ?? false : false,
+    recovered: value.schemaVersion === 3 ? booleanValue(value.recovered) ?? (
+      attemptCount > 1 && ["LOADED", "LOADED_AFTER_TIMEOUT"].includes(outcome)
+    ) : false,
     artifactPath: stringValue(value.diagnosticArtifactPath),
     source: "debug_artifact",
   };
@@ -409,6 +428,27 @@ const resolveDebugDirectory = async (
     if (await existingDirectory(candidate)) return { directory: candidate, unsafe };
   }
   return { unsafe };
+};
+
+const findUniqueBrowserStageArtifact = async (
+  siteDirectory: string,
+): Promise<{ artifactPath?: string; ambiguous: boolean }> => {
+  const deepDebugDirectory = path.join(siteDirectory, "deep-debug");
+  let entries;
+  try {
+    entries = await readdir(deepDebugDirectory, { withFileTypes: true });
+  } catch {
+    return { ambiguous: false };
+  }
+  const candidates: string[] = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const candidate = path.join(deepDebugDirectory, entry.name, "browser", "browser-stage.json");
+    if (await existingFile(candidate)) candidates.push(candidate);
+  }
+  return candidates.length === 1
+    ? { artifactPath: candidates[0]!, ambiguous: false }
+    : { ambiguous: candidates.length > 1 };
 };
 
 const normalizeMessageExcerpt = (value: string): string =>
@@ -732,18 +772,71 @@ const readSite = async (runPath: string, directoryName: string): Promise<SiteEvi
   const websiteUrl = currentUrl || jsonUrl || legacyUrl || findWebsiteUrl(inputJson);
   let browserStage = parseBrowserStageSection(currentBrowserSection);
   const reportedBrowserArtifact = browserStage?.artifactPath;
+  let loadedBrowserArtifact = false;
+  let referencedBrowserArtifactFound = false;
   if (reportedBrowserArtifact && reportedBrowserArtifact !== "none") {
     const reportedDebugDirectory = path.dirname(path.dirname(reportedBrowserArtifact));
     const resolvedDebug = await resolveDebugDirectory(directory, reportedDebugDirectory);
     if (resolvedDebug.directory) {
       const browserArtifactPath = path.join(resolvedDebug.directory, "browser", "browser-stage.json");
       if (await existingFile(browserArtifactPath)) {
+        referencedBrowserArtifactFound = true;
         try {
-          browserStage = browserStageFromJson(parseJsonText(await readTextSafe(browserArtifactPath))) ?? browserStage;
-          sourcePaths.push(browserArtifactPath);
+          const parsedBrowserStage = browserStageFromJson(parseJsonText(await readTextSafe(browserArtifactPath)));
+          if (parsedBrowserStage) {
+            browserStage = parsedBrowserStage;
+            sourcePaths.push(browserArtifactPath);
+            loadedBrowserArtifact = true;
+          } else {
+            errors.push(makeError(
+              directoryName,
+              "warning",
+              "malformed_browser_stage_artifact",
+              "The referenced browser-stage artifact does not use a supported schema.",
+              browserArtifactPath,
+            ));
+          }
         } catch (error) {
           errors.push(makeError(directoryName, "warning", "malformed_browser_stage_artifact", String(error), browserArtifactPath));
         }
+      }
+    }
+  }
+  if (!loadedBrowserArtifact && !referencedBrowserArtifactFound) {
+    const fallbackBrowserArtifact = await findUniqueBrowserStageArtifact(directory);
+    if (fallbackBrowserArtifact.ambiguous) {
+      errors.push(makeError(
+        directoryName,
+        "warning",
+        "ambiguous_browser_stage_artifacts",
+        "Multiple unreferenced browser-stage artifacts exist; none was selected.",
+        path.join(directory, "deep-debug"),
+      ));
+    } else if (fallbackBrowserArtifact.artifactPath) {
+      try {
+        const parsedBrowserStage = browserStageFromJson(
+          parseJsonText(await readTextSafe(fallbackBrowserArtifact.artifactPath)),
+        );
+        if (parsedBrowserStage) {
+          browserStage = parsedBrowserStage;
+          sourcePaths.push(fallbackBrowserArtifact.artifactPath);
+        } else {
+          errors.push(makeError(
+            directoryName,
+            "warning",
+            "malformed_browser_stage_artifact",
+            "The recovered browser-stage artifact does not use a supported schema.",
+            fallbackBrowserArtifact.artifactPath,
+          ));
+        }
+      } catch (error) {
+        errors.push(makeError(
+          directoryName,
+          "warning",
+          "malformed_browser_stage_artifact",
+          String(error),
+          fallbackBrowserArtifact.artifactPath,
+        ));
       }
     }
   }

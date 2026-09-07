@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createServer } from "node:http";
 import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -122,6 +123,34 @@ test("full-site watchdog returns TIMED_OUT even before browser setup completes",
   );
   assert.equal(outcome.executionStatus, "TIMED_OUT");
   assert.match(outcome.reason ?? "", /Full website workflow timed out/);
+});
+
+test("full-site watchdog preserves completed browser-stage evidence during later channel work", async () => {
+  const server = createServer((request, response) => {
+    if (request.url === "/contact") return;
+    response.writeHead(200, { "content-type": "text/html" });
+    response.end(
+      "<title>Fixture company</title><main><h1>Business consulting services</h1>" +
+      "<p>We provide strategy, implementation, training, and ongoing support for organizations worldwide.</p>" +
+      "<a href='/contact'>Contact our team</a></main>",
+    );
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("Fixture server did not bind.");
+  try {
+    const outcome = await run_contact_outreach_core(
+      { ...CONTACT_REQUEST, websiteUrl: `http://127.0.0.1:${address.port}/` },
+      { runMode: "production", siteTimeoutMs: 5_000 },
+    );
+    assert.equal(outcome.executionStatus, "TIMED_OUT");
+    assert.equal(outcome.browserStage?.schemaVersion, 3);
+    assert.ok(["LOADED", "LOADED_AFTER_TIMEOUT"].includes(outcome.browserStage?.outcome ?? ""));
+    assert.equal(outcome.browserStage?.pageQuality, "USABLE");
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
 });
 
 test("Hebrew form semantics populate supplied values verbatim and accept only required privacy consent", async () => {

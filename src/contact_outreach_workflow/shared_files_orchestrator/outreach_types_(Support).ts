@@ -163,6 +163,7 @@ export interface BrowserStageTimelineEvent {
   status?: number;
   detail?: string;
   initiator?: "OUR_AUTOMATION" | "PLAYWRIGHT" | "BROWSER" | "DESTINATION" | "UNKNOWN";
+  attempt?: number;
 }
 
 export interface BrowserStageResourceSnapshot {
@@ -182,9 +183,71 @@ export interface BrowserStageContentEvidence {
   titlePreview?: string;
   bodyTextLength?: number;
   elementCount?: number;
+  semanticElementCount?: number;
   controlCount?: number;
+  formCount?: number;
+  embeddedContentCount?: number;
+  contactRouteCount?: number;
   meaningfulContent: boolean;
   accessRestrictionIndicators: string[];
+  pageQualityIndicators: string[];
+}
+
+export type BrowserNavigationCandidateKind =
+  | "ORIGINAL"
+  | "WWW_HTTPS"
+  | "CANONICAL_HTTPS"
+  | "ORIGINAL_RETRY";
+
+export type BrowserPageQuality =
+  | "USABLE"
+  | "ACCESS_RESTRICTED"
+  | "HTTP_ERROR"
+  | "EMPTY"
+  | "PARKED"
+  | "EXPIRED"
+  | "SITE_ERROR"
+  | "INSECURE_TRANSPORT"
+  | "INSPECTION_FAILED"
+  | "UNUSABLE";
+
+export interface BrowserNavigationAttempt {
+  attempt: number;
+  candidateKind: BrowserNavigationCandidateKind;
+  url: string;
+  retryReason?: string;
+  startedAt: string;
+  finishedAt: string;
+  durationMs: number;
+  timeoutMs: number;
+  committed: boolean;
+  committedUrl?: string;
+  finalUrl: string;
+  outcome: BrowserStageOutcome;
+  mainDocumentReceived: boolean;
+  mainDocumentStatus?: number;
+  pageQuality: BrowserPageQuality;
+  error?: BrowserStageErrorEvidence;
+}
+
+export interface BrowserPreflightEvidence {
+  kind: "DNS" | "HTTP_REDIRECT_PROBE";
+  candidateUrl: string;
+  outcome: "SUCCEEDED" | "FAILED" | "SKIPPED";
+  startedAt: string;
+  finishedAt: string;
+  status?: number;
+  discoveredUrl?: string;
+  detail?: string;
+}
+
+export interface BrowserSecurityEvidence {
+  scheme: "http" | "https" | "other";
+  cleartext: boolean;
+  tlsRequired: boolean;
+  tlsEstablished?: boolean;
+  formSubmissionAllowed: boolean;
+  reason?: string;
 }
 
 export interface BrowserStageHealthEvidence {
@@ -200,7 +263,7 @@ export interface BrowserStageHealthEvidence {
 }
 
 export interface BrowserStageResult {
-  schemaVersion: 2;
+  schemaVersion: 3;
   entered: boolean;
   outcome: BrowserStageOutcome;
   originalUrl: string;
@@ -210,9 +273,23 @@ export interface BrowserStageResult {
   durationMs: number;
   phase: BrowserFailurePhase;
   operation: string;
-  attempt: 1;
+  attempt: number;
   timeoutMs: number;
-  waitUntil: "domcontentloaded";
+  waitUntil: "commit";
+  navigationAttempts: BrowserNavigationAttempt[];
+  selectedCandidateKind: BrowserNavigationCandidateKind;
+  selectedCandidate: {
+    attempt: number;
+    kind: BrowserNavigationCandidateKind;
+    url: string;
+  };
+  recoveryEnabled: boolean;
+  recoveryEligible: boolean;
+  recovered: boolean;
+  preflightEvidence: BrowserPreflightEvidence[];
+  pageQuality: BrowserPageQuality;
+  pageQualityEvidence: string[];
+  securityEvidence: BrowserSecurityEvidence;
   redirectChain: string[];
   normalizedUrl: string;
   committedUrl?: string;
@@ -268,7 +345,7 @@ export interface BrowserStageResult {
 }
 
 export interface BrowserStageRunSummary {
-  schemaVersion: 2;
+  schemaVersion: 3;
   generatedAt: string;
   totalWebsites: number;
   entered: number;
@@ -281,6 +358,17 @@ export interface BrowserStageRunSummary {
   categoryPercentagesOfEntrants: Record<BrowserFailureCategory, number>;
   subcategoryCounts: Record<string, number>;
   ourAutomationSubcategoryCounts: Record<string, number>;
+  kpis: {
+    usablePages: number;
+    usableBrowserStageSuccessRate: number;
+    transportLoaded: number;
+    transportLoadRate: number;
+    recoveryEligible: number;
+    recoveredUsable: number;
+    recoveryYield: number;
+    falseLoaded: number;
+    preBrowser: number;
+  };
   ledger: Array<{ siteId: string; websiteUrl: string; browserStage: BrowserStageResult }>;
   preBrowserExclusions: Array<{ websiteUrl: string; reason: string }>;
   reconciliation: {

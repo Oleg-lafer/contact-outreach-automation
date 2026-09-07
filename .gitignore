@@ -27,3 +27,8 @@ output/
 **/deep-debug/
 contact-form-runs/testing-process/
 run_results/
+
+# Local campaign import preparation artifacts
+insert_campaig_into_DB/campaign*-source-preview.xlsx
+insert_campaig_into_DB/campaign*-websites-to-import.json
+insert_campaig_into_DB/campaign*-xlsx-rows.json

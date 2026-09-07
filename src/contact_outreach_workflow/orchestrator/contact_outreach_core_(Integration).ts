@@ -17,6 +17,7 @@ import type {
   AutomationRunMode,
   ContactOutreachOutcome,
   ContactRequest,
+  BrowserStageResult,
   OutreachBrowserSession,
 } from "../shared_files_orchestrator/outreach_types_(Support).js";
 
@@ -45,7 +46,7 @@ export async function run_contact_outreach_core(
     timeout = setTimeout(() => {
       const error = new SiteWorkflowTimeoutError(timeout_ms, state.stage);
       state.expired = true;
-      state.session?.deepDebug?.record({
+      (state.session?.deepDebug ?? state.deepDebug)?.record({
         stage: "orchestrator", substage: "site-watchdog", operation: "full-site-deadline",
         outcome: "failed", reason: error.message, url: contact_request.websiteUrl,
         data: { timeoutMs: timeout_ms, lastKnownStage: state.stage },
@@ -61,6 +62,7 @@ export async function run_contact_outreach_core(
     const settled = await settle_within(operation, 2_000);
     const outcome = site_timeout_outcome(contact_request.websiteUrl, error.message);
     if (settled?.browserStage) outcome.browserStage = settled.browserStage;
+    else if (state.browserStage) outcome.browserStage = state.browserStage;
     if (settled?.deepDebug) {
       outcome.deepDebug = settled.deepDebug;
       outcome.channels.forms.deepDebug = settled.deepDebug;
@@ -75,6 +77,8 @@ export async function run_contact_outreach_core(
 interface CoreWatchdogState {
   stage: string;
   session?: OutreachBrowserSession;
+  browserStage?: BrowserStageResult;
+  deepDebug?: DeepDebugContext;
   expired?: boolean;
 }
 
@@ -104,6 +108,7 @@ async function run_contact_outreach_core_internal(
         contactValues: contact_request_debug_values(contact_request),
         environment: process.env,
       }).catch(() => undefined);
+      if (deep_debug) watchdog_state.deepDebug = deep_debug;
     }
     browser_session = await open_target_website(contact_request, {
       ...(options.engine ? { engine: options.engine } : {}),
@@ -115,6 +120,7 @@ async function run_contact_outreach_core_internal(
       },
     });
     watchdog_state.session = browser_session;
+    if (browser_session.browserStage) watchdog_state.browserStage = browser_session.browserStage;
     if (watchdog_state.expired) {
       await browser_session.close().catch(() => undefined);
       throw new SiteWorkflowTimeoutError(
@@ -165,7 +171,10 @@ async function run_contact_outreach_core_internal(
         : "RUN_FAILED",
     );
     const browser_error = find_browser_stage_error(error);
-    if (browser_error) outcome.browserStage = browser_error.browserStage;
+    if (browser_error) {
+      outcome.browserStage = browser_error.browserStage;
+      watchdog_state.browserStage = browser_error.browserStage;
+    }
     else if (browser_session?.browserStage) outcome.browserStage = browser_session.browserStage;
   } finally {
     watchdog_state.stage = "browser cleanup and diagnostic finalization";

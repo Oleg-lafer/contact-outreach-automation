@@ -189,7 +189,7 @@ export interface SiteEvidence {
 }
 
 export interface BrowserStageArtifactEvidence {
-  schemaVersion: 1 | 2;
+  schemaVersion: 1 | 2 | 3;
   entered: boolean;
   outcome: "LOADED" | "LOADED_AFTER_TIMEOUT" | "FAILED" | "NOT_ENTERED" | "";
   phase: string;
@@ -218,6 +218,11 @@ export interface BrowserStageArtifactEvidence {
   timeoutSource: string;
   lastProgressAt: string;
   lastProgressType: string;
+  attemptCount: number;
+  selectedCandidateKind: string;
+  pageQuality: string;
+  recoveryEligible: boolean;
+  recovered: boolean;
   artifactPath: string;
   source: "structured_text" | "debug_artifact";
 }
