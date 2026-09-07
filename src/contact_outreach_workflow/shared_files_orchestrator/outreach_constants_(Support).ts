@@ -16,6 +16,7 @@ export const DEFAULT_PRODUCTION_OUTPUT_PATH = "output/production-result.txt";
 export const DEFAULT_DEEP_DEBUG_OUTPUT_PATH = "output/deep-debug-result.txt";
 export const RUN_MODE_ENVIRONMENT_VARIABLE = "CONTACT_FORM_RUN_MODE";
 export const AUTOMATION_ENGINE_ENVIRONMENT_VARIABLE = "CONTACT_FORM_ENGINE";
+export const BROWSER_RECOVERY_ENVIRONMENT_VARIABLE = "CONTACT_FORM_BROWSER_RECOVERY";
 export const OPENROUTER_MODEL_ENVIRONMENT_VARIABLE = "OPENROUTER_MODEL";
 export const OPENROUTER_API_KEY_FILE_ENVIRONMENT_VARIABLE =
   "OPENROUTER_API_KEY_FILE";
@@ -23,6 +24,10 @@ export const DEFAULT_OPENROUTER_API_KEY_FILE =
   "C:\\Users\\olegl\\Documents\\PW\\OPEN_AI.txt";
 
 export const NAVIGATION_TIMEOUT_MS = 15_000;
+export const RECOVERY_NAVIGATION_TIMEOUT_MS = 10_000;
+export const BROWSER_READINESS_TIMEOUT_MS = 10_000;
+export const BROWSER_RECOVERY_TOTAL_BUDGET_MS = 40_000;
+export const BROWSER_PREFLIGHT_TIMEOUT_MS = 4_000;
 export const ACTION_TIMEOUT_MS = 5_000;
 export const CONFIRMATION_TIMEOUT_MS = 4_000;
 export const SUBMIT_PREFLIGHT_ATTEMPTS = 3;
@@ -44,6 +49,17 @@ export function resolve_site_watchdog_timeout(
   const configured = Number(environment.CONTACT_FORM_SITE_TIMEOUT_MS ?? "300000");
   if (!Number.isFinite(configured) || configured < 30_000) return 300_000;
   return Math.floor(configured);
+}
+
+export function resolve_browser_recovery_enabled(
+  environment: NodeJS.ProcessEnv = process.env,
+): boolean {
+  const configured = environment[BROWSER_RECOVERY_ENVIRONMENT_VARIABLE];
+  if (configured === undefined || configured === "" || configured === "off") return false;
+  if (configured === "on") return true;
+  throw new Error(
+    `Invalid ${BROWSER_RECOVERY_ENVIRONMENT_VARIABLE} value. Expected "on" or "off".`,
+  );
 }
 
 export function is_contact_form_debug_enabled(): boolean {

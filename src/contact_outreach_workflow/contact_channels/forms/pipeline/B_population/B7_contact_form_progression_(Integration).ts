@@ -20,10 +20,7 @@ import type {
   PageIntelligenceObserveResult,
 } from "../../../../shared_files_orchestrator/page_intelligence_(Integration).js";
 import type { DeepDebugContext } from "../../shared_files_forms/deep_debug_types_(Support).js";
-import {
-  create_page_intelligence_scope,
-  with_masked_page_values,
-} from "../../../../shared_files_orchestrator/page_value_redaction_(Integration).js";
+import { create_page_intelligence_scope } from "../../../../shared_files_orchestrator/page_value_redaction_(Integration).js";
 
 const PROGRESSION_CONTROL_SELECTOR = [
   'button[type="button"]',
@@ -63,18 +60,13 @@ export async function find_stagehand_complete_alternative_form(options: {
   let observation: PageIntelligenceObserveResult;
   const started_at = Date.now();
   try {
-    observation = await with_masked_page_values(
-      candidate.frame.page(),
-      redactionValues,
-      () =>
-        pageIntelligence.observe({
-          stage: "population",
-          page: candidate.frame.page(),
-          instruction,
-          ignoreSelectors: [CAPTCHA_SELECTOR],
-          timeoutMs: AI_OBSERVE_TIMEOUT_MS,
-        }),
-    );
+    observation = await pageIntelligence.observe({
+      stage: "population",
+      page: candidate.frame.page(),
+      instruction,
+      ignoreSelectors: [CAPTCHA_SELECTOR],
+      timeoutMs: AI_OBSERVE_TIMEOUT_MS,
+    });
   } catch (error) {
     return {
       found: false,
@@ -263,19 +255,14 @@ async function observe_and_advance_with_page_intelligence(
     let observation: PageIntelligenceObserveResult;
     const started_at = Date.now();
     try {
-      observation = await with_masked_page_values(
-        candidate.frame.page(),
-        redaction_values,
-        () =>
-          page_intelligence.observe({
-            stage: "population",
-            page: candidate.frame.page(),
-            instruction,
-            selector: scope_selector,
-            ignoreSelectors: [CAPTCHA_SELECTOR],
-            timeoutMs: AI_OBSERVE_TIMEOUT_MS,
-          }),
-      );
+      observation = await page_intelligence.observe({
+        stage: "population",
+        page: candidate.frame.page(),
+        instruction,
+        selector: scope_selector,
+        ignoreSelectors: [CAPTCHA_SELECTOR],
+        timeoutMs: AI_OBSERVE_TIMEOUT_MS,
+      });
     } catch (error) {
       ai_actions.push(
         create_ai_operation_evidence({

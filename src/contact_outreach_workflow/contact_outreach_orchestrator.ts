@@ -95,20 +95,13 @@ async function main(): Promise<void> {
     process.env[RUN_MODE_ENVIRONMENT_VARIABLE] = cli_options.runMode;
   }
 
-  const site_timeout_ms = resolve_site_watchdog_timeout(process.env);
-  const watchdog = setTimeout(() => {
-    console.error(
-      `Site watchdog stopped the workflow after ${Math.round(site_timeout_ms / 1000)} seconds without completion.`,
-    );
-    process.exit(124);
-  }, site_timeout_ms);
   const outcome = await run_contact_outreach_workflow(
     cli_options.inputPath,
     {
       ...(cli_options.runMode ? { runMode: cli_options.runMode } : {}),
       outputPath: cli_options.outputPath,
     },
-  ).finally(() => clearTimeout(watchdog));
+  );
   const resolved_output_path = resolve(cli_options.outputPath);
   const report = format_contact_outreach_outcome(
     outcome,

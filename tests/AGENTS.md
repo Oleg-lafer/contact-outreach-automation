@@ -103,8 +103,9 @@ After validation, Codex must report:
   deterministic browsing when AI configuration is unavailable.
 - `stagehand-fallbacks.test.ts` - mocked/bounded Stagehand discovery,
   population, progression, submission, and confirmation fallbacks, including
-  selector validation, masking, CAPTCHA safety, and one-action limits. This is
-  part of the normal suite and must not make real provider calls.
+  selector validation, non-mutating observation boundaries, critical-field
+  integrity, CAPTCHA safety, and one-action limits. This is part of the normal
+  suite and must not make real provider calls.
 - `stagehand-smoke.ts` - real Stagehand integration smoke test against a local
   contact form. It is intentionally excluded from `npm test` and may incur
   provider cost.

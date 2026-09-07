@@ -3,19 +3,21 @@ import { create_email_failure_outcome } from "../contact_channels/emails/pipelin
 import { create_meeting_failure_outcome } from "../contact_channels/meetings/pipeline/C_reporting/C1_meeting_reporting_(Support).js";
 import { create_blocked_discovery_outcome } from "../contact_channels/forms/pipeline/A_discovery/A4_discovery_evidence_(Deterministic).js";
 import { open_target_website } from "./B_browser/B_browser_session_(Integration).js";
-import { discover_contact_routes } from "./C_contact_routes/C1_contact_route_discovery_(Integration).js";
+import { ContactRouteScanTimeoutError, discover_contact_routes } from "./C_contact_routes/C1_contact_route_discovery_(Integration).js";
 import { run_contact_channels } from "./D_contact_channel_coordination/D_contact_channel_coordination_(Integration).js";
 import { create_contact_outreach_outcome } from "./E_aggregate_reporting/E_aggregate_reporting_(Support).js";
 import { describe_error } from "../shared_files_orchestrator/outreach_errors_(Support).js";
 import { BrowserStageError } from "../shared_files_orchestrator/browser_stage_diagnostics_(Support).js";
 import { create_deep_debug_context } from "../shared_files_orchestrator/deep_debug_observability_(Support).js";
 import { resolve_automation_engine } from "./B_browser/B_browser_session_(Integration).js";
+import { resolve_site_watchdog_timeout } from "../shared_files_orchestrator/outreach_constants_(Support).js";
 import type { DeepDebugContext } from "../shared_files_orchestrator/deep_debug_types_(Support).js";
 import type {
   AutomationEngine,
   AutomationRunMode,
   ContactOutreachOutcome,
   ContactRequest,
+  BrowserStageResult,
   OutreachBrowserSession,
 } from "../shared_files_orchestrator/outreach_types_(Support).js";
 
@@ -29,11 +31,68 @@ export interface ContactOutreachCoreOptions {
     siteOrdinal?: number;
     websiteId?: number;
   };
+  siteTimeoutMs?: number;
 }
 
 export async function run_contact_outreach_core(
   contact_request: ContactRequest,
   options: ContactOutreachCoreOptions = {},
+): Promise<ContactOutreachOutcome> {
+  const timeout_ms = options.siteTimeoutMs ?? resolve_site_watchdog_timeout();
+  const state: CoreWatchdogState = { stage: "browser initialization" };
+  let timeout: number | NodeJS.Timeout | undefined;
+  const operation = run_contact_outreach_core_internal(contact_request, options, state);
+  const deadline = new Promise<never>((_resolve, reject) => {
+    timeout = setTimeout(() => {
+      const error = new SiteWorkflowTimeoutError(timeout_ms, state.stage);
+      state.expired = true;
+      (state.session?.deepDebug ?? state.deepDebug)?.record({
+        stage: "orchestrator", substage: "site-watchdog", operation: "full-site-deadline",
+        outcome: "failed", reason: error.message, url: contact_request.websiteUrl,
+        data: { timeoutMs: timeout_ms, lastKnownStage: state.stage },
+      });
+      void state.session?.close().catch(() => undefined);
+      reject(error);
+    }, timeout_ms);
+  });
+  try {
+    return await Promise.race([operation, deadline]);
+  } catch (error) {
+    if (!(error instanceof SiteWorkflowTimeoutError)) throw error;
+    const settled = await settle_within(operation, 2_000);
+    const outcome = site_timeout_outcome(contact_request.websiteUrl, error.message);
+    if (settled?.browserStage) outcome.browserStage = settled.browserStage;
+    else if (state.browserStage) outcome.browserStage = state.browserStage;
+    if (settled?.deepDebug) {
+      outcome.deepDebug = settled.deepDebug;
+      outcome.channels.forms.deepDebug = settled.deepDebug;
+    }
+    return outcome;
+  } finally {
+    if (timeout) clearTimeout(timeout);
+    void operation.catch(() => undefined);
+  }
+}
+
+interface CoreWatchdogState {
+  stage: string;
+  session?: OutreachBrowserSession;
+  browserStage?: BrowserStageResult;
+  deepDebug?: DeepDebugContext;
+  expired?: boolean;
+}
+
+class SiteWorkflowTimeoutError extends Error {
+  public constructor(public readonly timeoutMs: number, public readonly stage: string) {
+    super(`Full website workflow timed out after ${timeoutMs} ms during ${stage}.`);
+    this.name = "SiteWorkflowTimeoutError";
+  }
+}
+
+async function run_contact_outreach_core_internal(
+  contact_request: ContactRequest,
+  options: ContactOutreachCoreOptions,
+  watchdog_state: CoreWatchdogState,
 ): Promise<ContactOutreachOutcome> {
   let browser_session: OutreachBrowserSession | undefined;
   let deep_debug: DeepDebugContext | undefined;
@@ -46,8 +105,10 @@ export async function run_contact_outreach_core(
         targetUrl: contact_request.websiteUrl,
         engine: resolve_automation_engine(options.engine),
         redactionValues: contact_request_redaction_values(contact_request),
+        contactValues: contact_request_debug_values(contact_request),
         environment: process.env,
       }).catch(() => undefined);
+      if (deep_debug) watchdog_state.deepDebug = deep_debug;
     }
     browser_session = await open_target_website(contact_request, {
       ...(options.engine ? { engine: options.engine } : {}),
@@ -58,7 +119,20 @@ export async function run_contact_outreach_core(
         redactionValues: contact_request_redaction_values(contact_request),
       },
     });
-    const contact_routes = await discover_contact_routes(browser_session.page);
+    watchdog_state.session = browser_session;
+    if (browser_session.browserStage) watchdog_state.browserStage = browser_session.browserStage;
+    if (watchdog_state.expired) {
+      await browser_session.close().catch(() => undefined);
+      throw new SiteWorkflowTimeoutError(
+        options.siteTimeoutMs ?? resolve_site_watchdog_timeout(),
+        watchdog_state.stage,
+      );
+    }
+    watchdog_state.stage = "contact-route discovery";
+    const contact_routes = await discover_contact_routes(browser_session.page, {
+      ...(deep_debug ? { deepDebug: deep_debug } : {}),
+    });
+    watchdog_state.stage = "contact-channel coordination";
     const channels = await run_contact_channels({
       contactRequest: contact_request,
       browserSession: browser_session,
@@ -92,12 +166,18 @@ export async function run_contact_outreach_core(
       ),
       create_email_failure_outcome(contact_request.websiteUrl, reason),
       create_meeting_failure_outcome(contact_request.websiteUrl, reason),
-      "RUN_FAILED",
+      error instanceof ContactRouteScanTimeoutError || error instanceof SiteWorkflowTimeoutError
+        ? "TIMED_OUT"
+        : "RUN_FAILED",
     );
     const browser_error = find_browser_stage_error(error);
-    if (browser_error) outcome.browserStage = browser_error.browserStage;
+    if (browser_error) {
+      outcome.browserStage = browser_error.browserStage;
+      watchdog_state.browserStage = browser_error.browserStage;
+    }
     else if (browser_session?.browserStage) outcome.browserStage = browser_session.browserStage;
   } finally {
+    watchdog_state.stage = "browser cleanup and diagnostic finalization";
     await browser_session?.close().catch(() => undefined);
     if (deep_debug) {
       const summary = await deep_debug.finalize({
@@ -116,6 +196,33 @@ export async function run_contact_outreach_core(
     }
   }
   return outcome!;
+}
+
+function site_timeout_outcome(website_url: string, reason: string): ContactOutreachOutcome {
+  const discovery = create_blocked_discovery_outcome(
+    website_url,
+    `Full-run discovery did not complete because the site watchdog expired: ${reason}`,
+  );
+  return create_contact_outreach_outcome(
+    create_form_failure_outcome(website_url, reason, "runtime.error", discovery),
+    create_email_failure_outcome(website_url, reason),
+    create_meeting_failure_outcome(website_url, reason),
+    "TIMED_OUT",
+  );
+}
+
+async function settle_within<T>(promise: Promise<T>, timeout_ms: number): Promise<T | undefined> {
+  let timeout: number | NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<undefined>((resolve) => { timeout = setTimeout(resolve, timeout_ms); }),
+    ]);
+  } catch {
+    return undefined;
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
 }
 
 function find_browser_stage_error(error: unknown): BrowserStageError | undefined {
@@ -142,4 +249,19 @@ function contact_request_redaction_values(
     contact_request.website,
     contact_request.country,
   ].filter((value): value is string => Boolean(value));
+}
+
+function contact_request_debug_values(contact_request: ContactRequest): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries({
+      name: contact_request.name,
+      email: contact_request.email,
+      phone: contact_request.phone,
+      message: contact_request.message,
+      company: contact_request.company,
+      role: contact_request.role,
+      website: contact_request.website,
+      country: contact_request.country,
+    }).filter((entry): entry is [string, string] => Boolean(entry[1])),
+  );
 }

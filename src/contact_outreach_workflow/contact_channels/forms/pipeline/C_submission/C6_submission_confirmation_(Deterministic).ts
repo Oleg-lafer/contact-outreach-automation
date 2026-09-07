@@ -480,7 +480,7 @@ function merge_message_candidates(
   });
 }
 
-function visible_success_message_matches(
+export function visible_success_message_matches(
   value: string,
 ): boolean {
   const normalized = normalize_message_text(value);
@@ -506,7 +506,7 @@ function classify_rejection_text(
     }
   | undefined {
   if (
-    /(?:captcha|recaptcha|hcaptcha|turnstile|not a robot|verify that you are not a robot).*(?:required|complete|verify|before submitting)|(?:required|complete|verify).*(?:captcha|recaptcha|hcaptcha|turnstile|robot)|(?:אימות|קאפצ['׳]?ה|רובוט).*(?:חובה|נדרש|יש להשלים|יש לאמת)|(?:יש להשלים|יש לאמת).*(?:אימות|רובוט)/u.test(
+    /(?:captcha|recaptcha|hcaptcha|turnstile|not a robot|verify that you are not a robot).*(?:required|complete|verify|before submitting)|(?:required|complete|verify).*(?:captcha|recaptcha|hcaptcha|turnstile|robot)|(?:אימות|קאפצ['׳]?ה|רובוט).*(?:חובה|נדרש|יש להשלים|יש לאמת)|(?:יש להשלים|יש לאמת).*(?:אימות|רובוט)|(?:נא )?אשרו? שאתם לא רובוט/u.test(
       normalized,
     )
   ) {
@@ -522,6 +522,20 @@ function classify_rejection_text(
     return { category: "validation", patternId: "numeric-value-required" };
   }
   if (
+    /high spam risk network|try again without vpn|anti-spam by cleantalk|forbidden.*(?:spam|vpn|anti-spam)/.test(
+      normalized,
+    )
+  ) {
+    return { category: "server", patternId: "anti-spam-server-rejection" };
+  }
+  if (
+    /one or more fields? (?:has|have) an error|please check and try again|(?:קיימת|יש) שגיאה בשדה אחד או יותר|נא לבדוק ולנסות שוב/u.test(
+      normalized,
+    )
+  ) {
+    return { category: "validation", patternId: "form-fields-have-errors" };
+  }
+  if (
     /required|mandatory|obligatoire|requis|campo obligatorio|seleccione una opci[oó]n|please complete|need to be completed|must accept (?:the )?(?:privacy|terms)|privacy terms|found errors in form|ne peut pas [êe]tre vide|не може да бъде празно|задължително|plot[ëe]soni|verplicht|obrigat[oó]rio|שדה חובה|חובה למלא|נא למלא|אנא מלא|אנא מלאו|יש למלא|נדרש למלא|יש לבחור|נא לבחור|יש לאשר (?:את )?(?:מדיניות הפרטיות|התנאים)/u.test(
       normalized,
     )
@@ -529,7 +543,7 @@ function classify_rejection_text(
     return { category: "validation", patternId: "post-submit-validation" };
   }
   if (
-    /please try again|unable to (?:send|submit)|could not (?:send|submit)|submission failed|message was not sent|an error occurred|^error(?:\s|:)|אירעה שגיאה|ארעה שגיאה|לא ניתן לשלוח|השליחה נכשלה|ההודעה לא נשלחה|נסה שוב|נסו שוב/u.test(
+    /please try again|unable to (?:send|submit)|could not (?:send|submit)|submission failed|message was not sent|an error occurred|^error(?:\s|:)|אירעה שגיאה|ארעה שגיאה|לא ניתן לשלוח|(?:ה|שליחת ה)הודעה נכשלה|השליחה נכשלה|ההודעה לא נשלחה|הייתה בעיה בשליחה|נסה שוב|נסו שוב/u.test(
       normalized,
     )
   ) {

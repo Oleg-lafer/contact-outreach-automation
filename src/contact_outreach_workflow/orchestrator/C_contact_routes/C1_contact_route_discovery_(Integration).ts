@@ -4,23 +4,88 @@ import type {
   ContactRouteDiscoveryResult,
 } from "../../shared_files_orchestrator/outreach_types_(Support).js";
 import { score_contact_route } from "./C2_contact_route_scoring_(Deterministic).js";
+import type { DeepDebugContext } from "../../shared_files_orchestrator/deep_debug_types_(Support).js";
+
+export const CONTACT_ROUTE_SCAN_TIMEOUT_MS = 10_000;
+
+export class ContactRouteScanTimeoutError extends Error {
+  public constructor(
+    public readonly timeoutMs: number,
+    public readonly activeFrameUrl: string | undefined,
+    public readonly completedFrames: number,
+    public readonly discoveredLinks: number,
+  ) {
+    super(`Contact-link scanning timed out after ${timeoutMs} ms.`);
+    this.name = "ContactRouteScanTimeoutError";
+  }
+}
+
+interface ContactRouteDiscoveryOptions {
+  timeoutMs?: number;
+  deepDebug?: DeepDebugContext;
+}
 
 export async function discover_contact_routes(
   page: Page,
+  options: ContactRouteDiscoveryOptions = {},
 ): Promise<ContactRouteDiscoveryResult> {
-  return {
-    startingUrl: page.url(),
-    candidates: await collect_ranked_contact_routes(page),
-  };
+  const timeout_ms = options.timeoutMs ?? CONTACT_ROUTE_SCAN_TIMEOUT_MS;
+  const started_at = Date.now();
+  const progress = { activeFrameUrl: undefined as string | undefined, completedFrames: 0, discoveredLinks: 0 };
+  options.deepDebug?.record({
+    stage: "orchestrator", substage: "contact-route-discovery",
+    operation: "scan-contact-links", outcome: "started", url: page.url(),
+    data: { timeoutMs: timeout_ms, frameCount: page.frames().length },
+  });
+
+  let timeout: NodeJS.Timeout | undefined;
+  const scan = collect_ranked_contact_routes(page, options.deepDebug, progress);
+  try {
+    const candidates = await Promise.race([
+      scan,
+      new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(() => reject(new ContactRouteScanTimeoutError(
+          timeout_ms,
+          progress.activeFrameUrl,
+          progress.completedFrames,
+          progress.discoveredLinks,
+        )), timeout_ms);
+      }),
+    ]);
+    options.deepDebug?.record({
+      stage: "orchestrator", substage: "contact-route-discovery",
+      operation: "scan-contact-links", outcome: "succeeded", url: page.url(),
+      durationMs: Date.now() - started_at,
+      data: { completedFrames: progress.completedFrames, discoveredLinks: progress.discoveredLinks, candidateCount: candidates.length },
+    });
+    return { startingUrl: page.url(), candidates };
+  } catch (error) {
+    if (error instanceof ContactRouteScanTimeoutError) {
+      options.deepDebug?.record({
+        stage: "orchestrator", substage: "contact-route-discovery",
+        operation: "scan-contact-links", outcome: "failed",
+        reason: error.message, url: page.url(),
+        ...(error.activeFrameUrl ? { frameUrl: error.activeFrameUrl } : {}),
+        durationMs: Date.now() - started_at,
+        data: { timeoutMs: error.timeoutMs, completedFrames: error.completedFrames, discoveredLinks: error.discoveredLinks },
+      });
+    }
+    throw error;
+  } finally {
+    if (timeout) clearTimeout(timeout);
+    void scan.catch(() => undefined);
+  }
 }
 
 async function collect_ranked_contact_routes(
   page: Page,
+  deep_debug: DeepDebugContext | undefined,
+  progress: { activeFrameUrl: string | undefined; completedFrames: number; discoveredLinks: number },
 ): Promise<ContactRouteCandidate[]> {
   const current_url = new URL(page.url());
   const routes_by_url = new Map<string, ContactRouteCandidate>();
 
-  for (const frame of page.frames()) {
+  for (const [frame_index, frame] of page.frames().entries()) {
     const frame_url = frame.url() || page.url();
     if (
       frame_url !== "about:blank" &&
@@ -28,6 +93,13 @@ async function collect_ranked_contact_routes(
     ) {
       continue;
     }
+    progress.activeFrameUrl = frame_url;
+    const frame_started_at = Date.now();
+    deep_debug?.record({
+      stage: "orchestrator", substage: "contact-route-discovery",
+      operation: "scan-frame-links", outcome: "started", url: page.url(), frameUrl: frame_url,
+      data: { frameOrdinal: frame_index + 1 },
+    });
     const raw_links = await frame
       .locator("a[href]")
       .evaluateAll((elements) =>
@@ -58,6 +130,14 @@ async function collect_ranked_contact_routes(
         }),
       )
       .catch(() => []);
+    progress.completedFrames++;
+    progress.discoveredLinks += raw_links.length;
+    deep_debug?.record({
+      stage: "orchestrator", substage: "contact-route-discovery",
+      operation: "scan-frame-links", outcome: "succeeded", url: page.url(), frameUrl: frame_url,
+      durationMs: Date.now() - frame_started_at,
+      data: { frameOrdinal: frame_index + 1, discoveredLinks: raw_links.length },
+    });
 
     for (const link of raw_links) {
       if (!link.href || /^(mailto|tel|javascript):/i.test(link.href)) {
@@ -99,6 +179,8 @@ async function collect_ranked_contact_routes(
       }
     }
   }
+
+  progress.activeFrameUrl = undefined;
 
   return [...routes_by_url.values()].sort(
     (left, right) => right.score - left.score,

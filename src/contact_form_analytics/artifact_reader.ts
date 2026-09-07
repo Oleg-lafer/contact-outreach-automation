@@ -1,5 +1,7 @@
 import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
+import { read_deep_debug_stage_events } from
+  "../contact_outreach_workflow/shared_files_orchestrator/deep_debug_timeline_(Support).js";
 import type {
   AnalyticsError,
   BrowserStageArtifactEvidence,
@@ -18,6 +20,10 @@ import type {
 
 const MAX_TEXT_BYTES = 1_000_000;
 const DEBUG_FILES = ["discovery-debug.json", "submission-debug.json", "missing-fields.json", "network.json"];
+const siteDirectoryId = (directoryName: string): number | null => {
+  const match = /^(?:website-)?(\d+)$/.exec(directoryName);
+  return match ? Number.parseInt(match[1]!, 10) : null;
+};
 
 interface JsonObject {
   [key: string]: unknown;
@@ -99,7 +105,9 @@ const parseBrowserStageSection = (section: string): BrowserStageArtifactEvidence
   const status = /^\d+$/.test(statusText) ? Number.parseInt(statusText, 10) : null;
   const outcome = parseField(section, "Outcome");
   const category = parseField(section, "Classification");
+  const attemptCount = Number(parseField(section, "Navigation attempts"));
   return {
+    schemaVersion: 1,
     entered: parseYesNo(parseField(section, "Entered")) ?? false,
     outcome: ["LOADED", "LOADED_AFTER_TIMEOUT", "FAILED", "NOT_ENTERED"].includes(outcome)
       ? outcome as BrowserStageArtifactEvidence["outcome"]
@@ -117,26 +125,43 @@ const parseBrowserStageSection = (section: string): BrowserStageArtifactEvidence
     meaningfulContent: parseYesNo(parseField(section, "Meaningful content present")),
     browserConnected: parseYesNo(parseField(section, "Browser connected")),
     pageClosed: parseYesNo(parseField(section, "Page closed")),
-    category: ["OUR_SYSTEM_FAILURE", "DESTINATION_FAILURE", "ACCESS_RESTRICTION", "UNDETERMINED"].includes(category)
-      ? category as BrowserStageArtifactEvidence["category"]
-      : "",
-    responsibleParty: parseField(section, "Responsible party"),
+    category: normalizeBrowserCategory(category),
+    responsibleParty: normalizeBrowserResponsibleParty(parseField(section, "Responsible party"), normalizeBrowserCategory(category)),
     subcategory: parseField(section, "Subcategory"),
     confidence: parseField(section, "Confidence"),
     ruleId: parseField(section, "Classification rule"),
     reason: parseField(section, "Browser-stage reason"),
+    classificationBasis: parseField(section, "Classification basis"),
+    strongestSupportingEvidence: parseField(section, "Strongest supporting evidence"),
+    strongestEvidenceAgainst: parseField(section, "Strongest evidence against"),
+    missingEvidence: parseField(section, "Missing evidence").split("|").map((item) => item.trim()).filter((item) => item && item !== "none"),
+    timeoutSource: parseField(section, "Timeout source"),
+    lastProgressAt: parseField(section, "Last progress at"),
+    lastProgressType: parseField(section, "Last progress type"),
+    attemptCount: Number.isFinite(attemptCount) && attemptCount > 0 ? Math.floor(attemptCount) : 1,
+    selectedCandidateKind: parseField(section, "Selected navigation candidate"),
+    pageQuality: parseField(section, "Page quality"),
+    recoveryEligible: parseYesNo(parseField(section, "Recovery eligible")) ?? false,
+    recovered: parseYesNo(parseField(section, "Recovered navigation")) ?? false,
     artifactPath: parseField(section, "Browser-stage artifact"),
     source: "structured_text",
   };
 };
 
 const browserStageFromJson = (value: unknown): BrowserStageArtifactEvidence | undefined => {
-  if (!isObject(value) || value.schemaVersion !== 1) return undefined;
+  if (!isObject(value) || (value.schemaVersion !== 1 && value.schemaVersion !== 2 && value.schemaVersion !== 3)) {
+    return undefined;
+  }
   const content = isObject(value.content) ? value.content : {};
   const health = isObject(value.health) ? value.health : {};
   const outcome = stringValue(value.outcome);
   const category = stringValue(value.category);
+  const navigationAttempts = Array.isArray(value.navigationAttempts) ? value.navigationAttempts : [];
+  const attemptCount = navigationAttempts.length > 0
+    ? navigationAttempts.length
+    : numberValue(value.attempt) ?? 1;
   return {
+    schemaVersion: value.schemaVersion,
     entered: Boolean(value.entered),
     outcome: ["LOADED", "LOADED_AFTER_TIMEOUT", "FAILED", "NOT_ENTERED"].includes(outcome)
       ? outcome as BrowserStageArtifactEvidence["outcome"]
@@ -154,17 +179,51 @@ const browserStageFromJson = (value: unknown): BrowserStageArtifactEvidence | un
     meaningfulContent: booleanValue(content.meaningfulContent),
     browserConnected: booleanValue(health.browserConnected),
     pageClosed: booleanValue(health.pageClosed),
-    category: ["OUR_SYSTEM_FAILURE", "DESTINATION_FAILURE", "ACCESS_RESTRICTION", "UNDETERMINED"].includes(category)
-      ? category as BrowserStageArtifactEvidence["category"]
-      : "",
-    responsibleParty: stringValue(value.responsibleParty),
+    category: normalizeBrowserCategory(category),
+    responsibleParty: normalizeBrowserResponsibleParty(stringValue(value.responsibleParty), normalizeBrowserCategory(category)),
     subcategory: stringValue(value.subcategory),
     confidence: stringValue(value.confidence),
     ruleId: stringValue(value.ruleId),
     reason: stringValue(value.reason),
+    classificationBasis: stringValue(value.classificationBasis),
+    strongestSupportingEvidence: stringValue(value.strongestSupportingEvidence),
+    strongestEvidenceAgainst: stringValue(value.strongestEvidenceAgainst),
+    missingEvidence: Array.isArray(value.missingEvidence)
+      ? value.missingEvidence.map(stringValue).filter(Boolean)
+      : [],
+    timeoutSource: stringValue(value.timeoutSource),
+    lastProgressAt: stringValue(value.lastProgressAt),
+    lastProgressType: stringValue(value.lastProgressType),
+    attemptCount,
+    selectedCandidateKind: value.schemaVersion === 3 ? stringValue(value.selectedCandidateKind) : "",
+    pageQuality: value.schemaVersion === 3 ? stringValue(value.pageQuality) : "",
+    recoveryEligible: value.schemaVersion === 3 ? booleanValue(value.recoveryEligible) ?? false : false,
+    recovered: value.schemaVersion === 3 ? booleanValue(value.recovered) ?? (
+      attemptCount > 1 && ["LOADED", "LOADED_AFTER_TIMEOUT"].includes(outcome)
+    ) : false,
     artifactPath: stringValue(value.diagnosticArtifactPath),
     source: "debug_artifact",
   };
+};
+
+const normalizeBrowserCategory = (value: string): BrowserStageArtifactEvidence["category"] => {
+  if (value === "OUR_SYSTEM_FAILURE") return "OUR_AUTOMATION";
+  if (value === "DESTINATION_FAILURE") return "DESTINATION_WEBSITE";
+  return ["OUR_AUTOMATION", "DESTINATION_WEBSITE", "ACCESS_RESTRICTION", "NETWORK_INFRASTRUCTURE", "UNDETERMINED"].includes(value)
+    ? value as BrowserStageArtifactEvidence["category"]
+    : "";
+};
+
+const normalizeBrowserResponsibleParty = (
+  value: string,
+  category: BrowserStageArtifactEvidence["category"],
+): string => {
+  if (value === "OUR_SYSTEM") return "OUR_AUTOMATION";
+  if (value === "DESTINATION") {
+    return category === "ACCESS_RESTRICTION" ? "ACCESS_RESTRICTION" : "DESTINATION_WEBSITE";
+  }
+  if (value === "THIRD_PARTY_PATH") return "NETWORK_INFRASTRUCTURE";
+  return value;
 };
 
 const parseInteger = (value: string): number | null =>
@@ -369,6 +428,27 @@ const resolveDebugDirectory = async (
     if (await existingDirectory(candidate)) return { directory: candidate, unsafe };
   }
   return { unsafe };
+};
+
+const findUniqueBrowserStageArtifact = async (
+  siteDirectory: string,
+): Promise<{ artifactPath?: string; ambiguous: boolean }> => {
+  const deepDebugDirectory = path.join(siteDirectory, "deep-debug");
+  let entries;
+  try {
+    entries = await readdir(deepDebugDirectory, { withFileTypes: true });
+  } catch {
+    return { ambiguous: false };
+  }
+  const candidates: string[] = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const candidate = path.join(deepDebugDirectory, entry.name, "browser", "browser-stage.json");
+    if (await existingFile(candidate)) candidates.push(candidate);
+  }
+  return candidates.length === 1
+    ? { artifactPath: candidates[0]!, ambiguous: false }
+    : { ambiguous: candidates.length > 1 };
 };
 
 const normalizeMessageExcerpt = (value: string): string =>
@@ -582,7 +662,8 @@ const formTextFromOutreachSections = (sections: Map<string, string>): string =>
 
 const readSite = async (runPath: string, directoryName: string): Promise<SiteEvidence> => {
   const directory = path.join(runPath, directoryName);
-  const numericId = Number.parseInt(directoryName, 10);
+  const numericId = siteDirectoryId(directoryName);
+  if (numericId === null) throw new Error(`Unsupported site directory name: ${directoryName}`);
   const names = await readdir(directory);
   const inputName = findInputPath(names);
   const inputPath = inputName ? path.join(directory, inputName) : undefined;
@@ -691,18 +772,71 @@ const readSite = async (runPath: string, directoryName: string): Promise<SiteEvi
   const websiteUrl = currentUrl || jsonUrl || legacyUrl || findWebsiteUrl(inputJson);
   let browserStage = parseBrowserStageSection(currentBrowserSection);
   const reportedBrowserArtifact = browserStage?.artifactPath;
+  let loadedBrowserArtifact = false;
+  let referencedBrowserArtifactFound = false;
   if (reportedBrowserArtifact && reportedBrowserArtifact !== "none") {
     const reportedDebugDirectory = path.dirname(path.dirname(reportedBrowserArtifact));
     const resolvedDebug = await resolveDebugDirectory(directory, reportedDebugDirectory);
     if (resolvedDebug.directory) {
       const browserArtifactPath = path.join(resolvedDebug.directory, "browser", "browser-stage.json");
       if (await existingFile(browserArtifactPath)) {
+        referencedBrowserArtifactFound = true;
         try {
-          browserStage = browserStageFromJson(parseJsonText(await readTextSafe(browserArtifactPath))) ?? browserStage;
-          sourcePaths.push(browserArtifactPath);
+          const parsedBrowserStage = browserStageFromJson(parseJsonText(await readTextSafe(browserArtifactPath)));
+          if (parsedBrowserStage) {
+            browserStage = parsedBrowserStage;
+            sourcePaths.push(browserArtifactPath);
+            loadedBrowserArtifact = true;
+          } else {
+            errors.push(makeError(
+              directoryName,
+              "warning",
+              "malformed_browser_stage_artifact",
+              "The referenced browser-stage artifact does not use a supported schema.",
+              browserArtifactPath,
+            ));
+          }
         } catch (error) {
           errors.push(makeError(directoryName, "warning", "malformed_browser_stage_artifact", String(error), browserArtifactPath));
         }
+      }
+    }
+  }
+  if (!loadedBrowserArtifact && !referencedBrowserArtifactFound) {
+    const fallbackBrowserArtifact = await findUniqueBrowserStageArtifact(directory);
+    if (fallbackBrowserArtifact.ambiguous) {
+      errors.push(makeError(
+        directoryName,
+        "warning",
+        "ambiguous_browser_stage_artifacts",
+        "Multiple unreferenced browser-stage artifacts exist; none was selected.",
+        path.join(directory, "deep-debug"),
+      ));
+    } else if (fallbackBrowserArtifact.artifactPath) {
+      try {
+        const parsedBrowserStage = browserStageFromJson(
+          parseJsonText(await readTextSafe(fallbackBrowserArtifact.artifactPath)),
+        );
+        if (parsedBrowserStage) {
+          browserStage = parsedBrowserStage;
+          sourcePaths.push(fallbackBrowserArtifact.artifactPath);
+        } else {
+          errors.push(makeError(
+            directoryName,
+            "warning",
+            "malformed_browser_stage_artifact",
+            "The recovered browser-stage artifact does not use a supported schema.",
+            fallbackBrowserArtifact.artifactPath,
+          ));
+        }
+      } catch (error) {
+        errors.push(makeError(
+          directoryName,
+          "warning",
+          "malformed_browser_stage_artifact",
+          String(error),
+          fallbackBrowserArtifact.artifactPath,
+        ));
       }
     }
   }
@@ -799,9 +933,12 @@ const readSite = async (runPath: string, directoryName: string): Promise<SiteEvi
     }
     if (resolvedDebug.directory) {
       const submissionDebugPath = path.join(resolvedDebug.directory, "submission-debug.json");
-      const confirmationEventsPath = path.join(resolvedDebug.directory, "confirmation", "events.jsonl");
       submissionSignals.debugArtifactAvailable = await existingFile(submissionDebugPath);
-      submissionSignals.confirmationEventsAvailable = await existingFile(confirmationEventsPath);
+      const confirmationEvents = await read_deep_debug_stage_events(
+        resolvedDebug.directory,
+        "confirmation",
+      ).catch(() => undefined);
+      submissionSignals.confirmationEventsAvailable = confirmationEvents !== undefined;
       if (submissionSignals.debugArtifactAvailable) {
         const submissionDebugText = await readTextSafe(submissionDebugPath);
         try {
@@ -830,13 +967,15 @@ const readSite = async (runPath: string, directoryName: string): Promise<SiteEvi
         }
         sourcePaths.push(submissionDebugPath);
       }
-      if (submissionSignals.confirmationEventsAvailable) {
-        const eventText = await readTextSafe(confirmationEventsPath);
+      if (confirmationEvents) {
+        const eventText = confirmationEvents.text.length > MAX_TEXT_BYTES
+          ? confirmationEvents.text.slice(0, MAX_TEXT_BYTES)
+          : confirmationEvents.text;
         const parsedMessages = parseDebugMessageSignals(eventText);
         submissionSignals.messageSignals = parsedMessages.signals;
         submissionSignals.debugArtifactMalformed =
           submissionSignals.debugArtifactMalformed || parsedMessages.malformed;
-        sourcePaths.push(confirmationEventsPath);
+        sourcePaths.push(confirmationEvents.path);
         if (parsedMessages.malformed) {
           errors.push(
             makeError(
@@ -844,7 +983,7 @@ const readSite = async (runPath: string, directoryName: string): Promise<SiteEvi
               "warning",
               "malformed_signal_debug_artifact",
               "At least one confirmation event could not be parsed; valid events were retained.",
-              confirmationEventsPath,
+              confirmationEvents.path,
             ),
           );
         }
@@ -996,8 +1135,8 @@ export const readRunArtifacts = async (requestedPath: string): Promise<RunArtifa
 
   const entries = await readdir(runPath, { withFileTypes: true });
   const numericDirectories = entries
-    .filter((entry) => entry.isDirectory() && /^\d+$/.test(entry.name))
-    .sort((left, right) => Number.parseInt(left.name, 10) - Number.parseInt(right.name, 10));
+    .filter((entry) => entry.isDirectory() && siteDirectoryId(entry.name) !== null)
+    .sort((left, right) => siteDirectoryId(left.name)! - siteDirectoryId(right.name)!);
   if (numericDirectories.length === 0) {
     throw new Error(`No numeric site directories or recognizable run artifacts were found in: ${runPath}`);
   }
@@ -1009,7 +1148,7 @@ export const readRunArtifacts = async (requestedPath: string): Promise<RunArtifa
     sites.push(...(await Promise.all(batch.map((entry) => readSite(runPath, entry.name)))));
   }
   if (!sites.some((site) => site.inputPath || site.primaryJsonPath || site.primaryTextPath)) {
-    throw new Error(`No recognizable input or result artifacts were found in numeric directories under: ${runPath}`);
+    throw new Error(`No recognizable input or result artifacts were found in site directories under: ${runPath}`);
   }
 
   const metadata = await readSummaryMetadata(runPath);

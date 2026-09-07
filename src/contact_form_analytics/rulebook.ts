@@ -159,7 +159,7 @@ const baseRules: Array<Omit<OrderedRule, "order">> = [
     subcategory: "our_system_browser_failure",
     evidenceTier: "debug_artifact",
     description: "Phase-aware browser evidence attributes the failure to our runtime or infrastructure.",
-    matches: (site) => site.browserStage?.outcome === "FAILED" && site.browserStage.category === "OUR_SYSTEM_FAILURE",
+    matches: (site) => site.browserStage?.outcome === "FAILED" && site.browserStage.category === "OUR_AUTOMATION",
     decide: (site) => ({
       subcategory: site.browserStage?.subcategory || "our_system_browser_failure",
       evidenceSummary: site.browserStage?.reason || "Structured browser-stage evidence attributes failure to our system.",
@@ -175,7 +175,7 @@ const baseRules: Array<Omit<OrderedRule, "order">> = [
     subcategory: "destination_browser_failure",
     evidenceTier: "debug_artifact",
     description: "Phase-aware browser evidence attributes the failure to the destination.",
-    matches: (site) => site.browserStage?.outcome === "FAILED" && site.browserStage.category === "DESTINATION_FAILURE",
+    matches: (site) => site.browserStage?.outcome === "FAILED" && site.browserStage.category === "DESTINATION_WEBSITE",
     decide: (site) => ({
       subcategory: site.browserStage?.subcategory || "destination_browser_failure",
       evidenceSummary: site.browserStage?.reason || "Structured browser-stage evidence attributes failure to the destination.",
@@ -192,7 +192,7 @@ const baseRules: Array<Omit<OrderedRule, "order">> = [
     evidenceTier: "debug_artifact",
     description: "The destination was reached, but structured evidence attributes the restriction to our system or traffic pattern.",
     matches: (site) => site.browserStage?.outcome === "FAILED" &&
-      site.browserStage.category === "ACCESS_RESTRICTION" && site.browserStage.responsibleParty === "OUR_SYSTEM",
+      site.browserStage.category === "ACCESS_RESTRICTION" && site.browserStage.responsibleParty === "OUR_AUTOMATION",
   },
   {
     id: "BRW-STRUCTURED-ACCESS-UNKNOWN",
@@ -205,7 +205,7 @@ const baseRules: Array<Omit<OrderedRule, "order">> = [
     description: "The destination was reached and restricted access, but responsibility cannot be assigned honestly.",
     matches: (site) => site.browserStage?.outcome === "FAILED" &&
       site.browserStage.category === "ACCESS_RESTRICTION" &&
-      !["OUR_SYSTEM", "DESTINATION"].includes(site.browserStage.responsibleParty),
+      !["OUR_AUTOMATION", "ACCESS_RESTRICTION"].includes(site.browserStage.responsibleParty),
   },
   {
     id: "BRW-STRUCTURED-ACCESS-DESTINATION",
@@ -217,7 +217,23 @@ const baseRules: Array<Omit<OrderedRule, "order">> = [
     evidenceTier: "debug_artifact",
     description: "The destination was reached and its access policy denied or challenged the browser.",
     matches: (site) => site.browserStage?.outcome === "FAILED" &&
-      site.browserStage.category === "ACCESS_RESTRICTION" && site.browserStage.responsibleParty === "DESTINATION",
+      site.browserStage.category === "ACCESS_RESTRICTION" && site.browserStage.responsibleParty === "ACCESS_RESTRICTION",
+  },
+  {
+    id: "BRW-STRUCTURED-NETWORK",
+    stage: "browser",
+    title: "Structured browser evidence attributes failure to network infrastructure",
+    attribution: "indeterminate",
+    causeFamily: "external_site_or_service_issue",
+    subcategory: "network_infrastructure_failure",
+    evidenceTier: "debug_artifact",
+    description: "Browser evidence identifies a DNS, connection, or infrastructure-path failure without overclaiming its origin.",
+    matches: (site) => site.browserStage?.outcome === "FAILED" && site.browserStage.category === "NETWORK_INFRASTRUCTURE",
+    decide: (site) => ({
+      subcategory: site.browserStage?.subcategory || "network_infrastructure_failure",
+      evidenceSummary: site.browserStage?.reason || "Structured browser-stage evidence identifies a network-path failure.",
+      primaryCause: site.browserStage?.reason || "Network infrastructure browser-stage failure",
+    }),
   },
   {
     id: "BRW-STRUCTURED-UNDETERMINED",
@@ -607,7 +623,11 @@ const baseRules: Array<Omit<OrderedRule, "order">> = [
     evidenceTier: "structured_text",
     description: "A name, email, phone, message, or equivalent standard field could not be populated.",
     matches: (site) =>
-      site.failureKind === "population.blocked" && has(site, /name|email|phone|message|field|populate|missing/),
+      (site.failureKind === "population.blocked" ||
+        site.failureKind === "population.message_not_found" ||
+        site.failureKind === "population.message_fill_failed" ||
+        site.failureKind === "population.contact_method_missing") &&
+      has(site, /name|email|phone|message|field|populate|missing|contact method/),
   },
   {
     id: "POP-LOCATOR-OR-TIMEOUT",
@@ -696,7 +716,11 @@ const baseRules: Array<Omit<OrderedRule, "order">> = [
     subcategory: "browser_validation_after_population",
     evidenceTier: "structured_text",
     description: "Browser or form validation blocked submission without proof of invalid source data.",
-    matches: (site) => site.failureKind === "submission.validation",
+    matches: (site) =>
+      site.failureKind === "submission.validation" ||
+      site.failureKind === "submission.message_integrity" ||
+      site.failureKind === "submission.message_lost" ||
+      site.failureKind === "submission.contact_method_lost",
   },
   {
     id: "SUB-POST-VALIDATION-REJECTION",

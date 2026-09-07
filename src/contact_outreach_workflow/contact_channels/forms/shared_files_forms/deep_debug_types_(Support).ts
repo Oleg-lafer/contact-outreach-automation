@@ -48,10 +48,16 @@ export interface DeepDebugFinalizeInput {
   failure?: string | undefined;
 }
 
+export type DeepDebugContactValues = Partial<Record<
+  "name" | "email" | "phone" | "message" | "company" | "role" | "website" | "country",
+  string
+>>;
+
 export interface DeepDebugContext {
   readonly runId: string;
   readonly artifactDirectory: string;
   readonly redactionValues: readonly string[];
+  readonly contactValues: DeepDebugContactValues;
 
   record(event: DeepDebugEventInput): void;
   writeJson(relativePath: string, value: unknown): Promise<string | undefined>;
@@ -64,8 +70,12 @@ export interface DeepDebugContext {
   }): Promise<unknown | undefined>;
   captureScreenshot(
     page: Page,
-    stage: "population" | "handoff" | "submission" | "confirmation",
+    stage: DeepDebugStage,
     label: string,
+    options?: {
+      fullPage?: boolean | undefined;
+      locator?: Locator | undefined;
+    },
   ): Promise<string | undefined>;
   attachPage(page: Page): Promise<void>;
   recordAiOperations(
@@ -82,5 +92,6 @@ export interface DeepDebugCreateOptions {
   targetUrl: string;
   engine: "playwright" | "stagehand";
   redactionValues: readonly string[];
+  contactValues?: DeepDebugContactValues | undefined;
   environment?: NodeJS.ProcessEnv | undefined;
 }

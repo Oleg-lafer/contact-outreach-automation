@@ -33,6 +33,7 @@ import type {
   OutreachClaimResult,
   OutreachHistoryStore,
 } from "../src/contact_outreach_workflow/shared_files_orchestrator/outreach_history_types_(Support).js";
+import type { BrowserStageResult } from "../src/contact_outreach_workflow/shared_files_orchestrator/outreach_types_(Support).js";
 import { normalize_outreach_domain } from "../src/contact_outreach_workflow/shared_files_orchestrator/website_identity_(Deterministic).js";
 
 class FakeHistoryStore implements OutreachHistoryStore {
@@ -209,6 +210,13 @@ test("database claim eligibility separates new work from explicit retries", () =
   assert.equal(
     claim_is_still_eligible(
       [{ execution_status: "running", forms_result: null }],
+      "retry-unsuccessful",
+    ),
+    false,
+  );
+  assert.equal(
+    claim_is_still_eligible(
+      [{ execution_status: "timed_out", forms_result: null }],
       "retry-unsuccessful",
     ),
     false,
@@ -391,6 +399,115 @@ test("database campaign continues after an ordinary website failure", async () =
   );
 });
 
+test("database runner retains recovered browser evidence without changing the stored website URL", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "outreach-database-recovered-browser-"));
+  const originalUrl = "https://example.test/contact";
+  const canonicalUrl = "https://www.example.test/contact";
+  const candidate = { websiteId: 31, websiteUrl: originalUrl };
+  let completedWebsiteUrl = "";
+  const campaign = campaign_from_database_row({
+    campaign_id: 1,
+    campaign_name: "Recovered browser fixture",
+    sender_details: {
+      name: "Sender", email: "sender@example.test", phone: "+1000",
+      company: "Company", role: "Role", website: "example.test", country: "USA",
+    },
+    message_to_send: "Message",
+    prevent_resend: true,
+  });
+  const repository: DatabaseCampaignRepository = {
+    loadCampaign: async () => campaign,
+    snapshotCandidates: async () => [candidate],
+    claimWebsite: async () => ({ action: "run", attemptId: 131, website: candidate }),
+    completeAttempt: async (_attemptId, outcome) => { completedWebsiteUrl = outcome.websiteUrl; },
+    recoverStaleAttempts: async () => 0,
+    close: async () => undefined,
+  };
+  const summary = await run_database_campaign(
+    {
+      campaignId: 1, runMode: "production", retryUnsuccessful: false,
+      preview: false, confirmed: true, outputRoot: directory,
+    },
+    {
+      repository,
+      runCore: async (request) => {
+        const outcome = create_contact_outreach_outcome(
+          create_form_failure_outcome(request.websiteUrl, "Fixture form result", "runtime.error"),
+          create_email_failure_outcome(request.websiteUrl, "Fixture result"),
+          create_meeting_failure_outcome(request.websiteUrl, "Fixture result"),
+          "RUN_FAILED",
+        );
+        outcome.browserStage = recovered_browser_stage(originalUrl, canonicalUrl);
+        return outcome;
+      },
+      engine: "playwright",
+      now: () => new Date("2026-01-01T00:00:00Z"),
+    },
+  );
+  const browserSummary = JSON.parse(await readFile(
+    join(summary.runDirectory!, "browser-stage-summary.json"),
+    "utf8",
+  )) as { schemaVersion: number; kpis: { recoveredUsable: number; recoveryYield: number } };
+  const report = await readFile(
+    join(summary.runDirectory!, "website-31", "production.txt"),
+    "utf8",
+  );
+  assert.equal(completedWebsiteUrl, originalUrl);
+  assert.equal(candidate.websiteUrl, originalUrl);
+  assert.equal(browserSummary.schemaVersion, 3);
+  assert.equal(browserSummary.kpis.recoveredUsable, 1);
+  assert.equal(browserSummary.kpis.recoveryYield, 100);
+  assert.match(report, new RegExp(`Original URL: ${originalUrl.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+  assert.match(report, new RegExp(`Final URL: ${canonicalUrl.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+});
+
+test("database campaign reports contact-route timeouts separately and continues", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "outreach-database-timeout-"));
+  const campaign = campaign_from_database_row({
+    campaign_id: 1, campaign_name: "Timeout fixture",
+    sender_details: { name: "Sender", email: "sender@example.test", phone: "+1000", company: "Company", role: "Role", website: "example.test", country: "USA" },
+    message_to_send: "Message", prevent_resend: true,
+  });
+  const candidates = [
+    { websiteId: 20, websiteUrl: "https://hung.example.test/" },
+    { websiteId: 21, websiteUrl: "https://next.example.test/" },
+  ];
+  const completed: string[] = [];
+  const repository: DatabaseCampaignRepository = {
+    loadCampaign: async () => campaign,
+    snapshotCandidates: async () => candidates,
+    claimWebsite: async (_campaign, websiteId) => ({ action: "run", attemptId: websiteId + 100, website: candidates.find((candidate) => candidate.websiteId === websiteId)! }),
+    completeAttempt: async (_attemptId, outcome) => { completed.push(outcome.executionStatus); },
+    recoverStaleAttempts: async () => 0,
+    close: async () => undefined,
+  };
+  let calls = 0;
+  const summary = await run_database_campaign(
+    { campaignId: 1, runMode: "deep-debug", retryUnsuccessful: false, preview: false, confirmed: true, outputRoot: directory },
+    {
+      repository,
+      runCore: async (request) => {
+        calls++;
+        const forms = create_form_failure_outcome(request.websiteUrl, calls === 1 ? "Contact-link scanning timed out after 10000 ms." : "Fixture failure", "runtime.error");
+        return create_contact_outreach_outcome(
+          forms,
+          create_email_failure_outcome(request.websiteUrl, forms.reason ?? "Fixture failure"),
+          create_meeting_failure_outcome(request.websiteUrl, forms.reason ?? "Fixture failure"),
+          calls === 1 ? "TIMED_OUT" : "RUN_FAILED",
+        );
+      },
+      engine: "playwright", now: () => new Date("2026-01-01T00:00:00Z"),
+    },
+  );
+
+  assert.equal(calls, 2);
+  assert.deepEqual(completed, ["TIMED_OUT", "RUN_FAILED"]);
+  assert.equal(summary.processed, 2);
+  assert.equal(summary.timedOut, 1);
+  assert.equal(summary.failed, 1);
+  assert.equal(summary.skipped, 0);
+});
+
 test("migration contains the agreed minimal tables, keys, and indexes", async () => {
   const sql = await readFile(
     "database/migrations/001_create_outreach_tables.sql",
@@ -411,6 +528,7 @@ test("migration contains the agreed minimal tables, keys, and indexes", async ()
   assert.match(sql, /`meeting_discovery_result`/);
   assert.match(sql, /'finished'/);
   assert.match(sql, /'run_failed'/);
+  assert.match(sql, /'timed_out'/);
   assert.doesNotMatch(sql, /'succeeded'/);
   assert.doesNotMatch(sql, /WORKER_|resend_cooldown|available_time/);
 
@@ -447,7 +565,127 @@ test("migration contains the agreed minimal tables, keys, and indexes", async ()
   assert.match(ownershipSql, /DROP COLUMN `campaign_id`/);
   assert.match(ownershipSql, /idx_outreach_attempt_resend_lookup` \(`website_id`, `forms_result`\)/);
   assert.doesNotMatch(ownershipSql, /junction|JSON_ARRAY/);
+
+  const timeoutSql = await readFile(
+    "database/migrations/005_add_timed_out_execution_status.sql",
+    "utf8",
+  );
+  assert.match(timeoutSql, /'timed_out'/);
+  assert.match(timeoutSql, /DROP CHECK `chk_outreach_attempt_completed_time`/);
 });
+
+function recovered_browser_stage(originalUrl: string, finalUrl: string): BrowserStageResult {
+  const startedAt = "2026-01-01T00:00:00.000Z";
+  const finishedAt = "2026-01-01T00:00:01.000Z";
+  return {
+    schemaVersion: 3,
+    entered: true,
+    outcome: "LOADED",
+    originalUrl,
+    normalizedUrl: originalUrl,
+    finalUrl,
+    startedAt,
+    finishedAt,
+    durationMs: 1_000,
+    phase: "INITIAL_NAVIGATION",
+    operation: "page.goto",
+    attempt: 2,
+    timeoutMs: 10_000,
+    waitUntil: "commit",
+    navigationAttempts: [
+      {
+        attempt: 1,
+        candidateKind: "ORIGINAL",
+        url: originalUrl,
+        startedAt,
+        finishedAt,
+        durationMs: 500,
+        timeoutMs: 15_000,
+        committed: false,
+        finalUrl: originalUrl,
+        outcome: "FAILED",
+        mainDocumentReceived: false,
+        pageQuality: "EMPTY",
+      },
+      {
+        attempt: 2,
+        candidateKind: "WWW_HTTPS",
+        url: finalUrl,
+        retryReason: "hostname failure",
+        startedAt,
+        finishedAt,
+        durationMs: 500,
+        timeoutMs: 10_000,
+        committed: true,
+        committedUrl: finalUrl,
+        finalUrl,
+        outcome: "LOADED",
+        mainDocumentReceived: true,
+        mainDocumentStatus: 200,
+        pageQuality: "USABLE",
+      },
+    ],
+    selectedCandidateKind: "WWW_HTTPS",
+    selectedCandidate: { attempt: 2, kind: "WWW_HTTPS", url: finalUrl },
+    recoveryEnabled: true,
+    recoveryEligible: true,
+    recovered: true,
+    preflightEvidence: [],
+    pageQuality: "USABLE",
+    pageQualityEvidence: [],
+    securityEvidence: {
+      scheme: "https",
+      cleartext: false,
+      tlsRequired: true,
+      tlsEstablished: true,
+      formSubmissionAllowed: true,
+    },
+    redirectChain: [finalUrl],
+    committedUrl: finalUrl,
+    navigationStartedAt: startedAt,
+    navigationFinishedAt: finishedAt,
+    timeline: [],
+    mainDocumentRequested: true,
+    mainDocumentReceived: true,
+    mainDocumentStatus: 200,
+    responseHeadersReceived: true,
+    connectionEstablished: true,
+    tlsEstablished: true,
+    transportEvidenceBasis: "DIRECT",
+    content: {
+      inspected: true,
+      readyState: "complete",
+      bodyTextLength: 120,
+      elementCount: 10,
+      controlCount: 1,
+      meaningfulContent: true,
+      accessRestrictionIndicators: [],
+      pageQualityIndicators: [],
+    },
+    health: {
+      browserConnected: true,
+      pageClosed: false,
+      browserDisconnectedObserved: false,
+      contextClosedObserved: false,
+      pageCrashObserved: false,
+      pageCloseObserved: false,
+    },
+    proxyConfigured: false,
+    runtime: {
+      pid: 1,
+      node: process.version,
+      platform: process.platform,
+      rssBytes: 1,
+      heapUsedBytes: 1,
+      userCpuMicros: 1,
+      systemCpuMicros: 1,
+    },
+    resourceSnapshots: [],
+    evidence: [],
+    contradictions: [],
+    missingEvidence: [],
+  };
+}
 
 test("migration runner distinguishes legacy, final, and partial schemas", () => {
   assert.equal(

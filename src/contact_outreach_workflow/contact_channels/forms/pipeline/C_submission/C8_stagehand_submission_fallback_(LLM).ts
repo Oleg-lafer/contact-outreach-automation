@@ -13,10 +13,7 @@ import type {
   PageIntelligence,
   PageIntelligenceAction,
 } from "../../../../shared_files_orchestrator/page_intelligence_(Integration).js";
-import {
-  create_page_intelligence_scope,
-  with_masked_page_values,
-} from "../../../../shared_files_orchestrator/page_value_redaction_(Integration).js";
+import { create_page_intelligence_scope } from "../../../../shared_files_orchestrator/page_value_redaction_(Integration).js";
 import type {
   AiActionEvidence,
   ContactFormCandidate,
@@ -185,19 +182,14 @@ async function run_stagehand_submission_proposal({
     let observation;
     const observation_started_at = Date.now();
     try {
-      observation = await with_masked_page_values(
+      observation = await pageIntelligence.observe({
+        stage: "submission",
         page,
-        redactionValues,
-        () =>
-          pageIntelligence.observe({
-            stage: "submission",
-            page,
-            instruction: SUBMISSION_OBSERVE_INSTRUCTION,
-            selector: scopeSelector,
-            ignoreSelectors: [CAPTCHA_SELECTOR],
-            timeoutMs: AI_OBSERVE_TIMEOUT_MS,
-          }),
-      );
+        instruction: SUBMISSION_OBSERVE_INSTRUCTION,
+        selector: scopeSelector,
+        ignoreSelectors: [CAPTCHA_SELECTOR],
+        timeoutMs: AI_OBSERVE_TIMEOUT_MS,
+      });
     } catch (error) {
       return {
         proposed: false,

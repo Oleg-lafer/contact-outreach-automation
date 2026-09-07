@@ -5,7 +5,7 @@ import type {
 } from "./outreach_types_(Support).js";
 import { normalize_bilingual_text } from "./bilingual_text_(Deterministic).js";
 
-const MAX_COOKIE_ACTIONS = 3;
+const MAX_OBSTRUCTION_ACTIONS = 3;
 const COOKIE_CONTAINER_SELECTOR = [
   "#onetrust-banner-sdk",
   "#onetrust-pc-sdk",
@@ -34,7 +34,8 @@ const COOKIE_CONTAINER_SELECTOR = [
 ].join(", ");
 
 const COOKIE_TEXT =
-  /cookie|consent|privacy|tracking|personal data|confidentialit|vie priv[ée]e|donn[ée]es personnelles|datenschutz|einwilligung|zustimmung|functionele|toestemming|privacidad|seguimiento|dados pessoais|privacidade|куки|согласие|עוגיות|פרטיות|הסכמה|מידע אישי|נתונים אישיים/iu;
+  /cookie|cookies|consent|privacy|tracking|personal data|confidentialit|vie priv[ée]e|donn[ée]es personnelles|datenschutz|einwilligung|zustimmung|functionele|toestemming|privacidad|seguimiento|dados pessoais|privacidade|куки|согласие|עוגיות|קובצי cookies|פרטיות|הסכמה|מידע אישי|נתונים אישיים/iu;
+const PROMOTIONAL_TEXT_REQUIRED = [/הנחה/u, /הצטרפו/u, /ניוזלטר/u] as const;
 const CONTROL_SELECTOR = [
   "button",
   '[role="button"]',
@@ -76,12 +77,12 @@ export async function dismiss_cookie_obstruction(
 export async function dismiss_cookie_obstructions(
   page: Page,
   target?: Locator,
-  maximum_actions = MAX_COOKIE_ACTIONS,
+  maximum_actions = MAX_OBSTRUCTION_ACTIONS,
 ): Promise<PageObstructionAction[]> {
   const actions: PageObstructionAction[] = [];
   const bounded_maximum = Math.max(
     0,
-    Math.min(MAX_COOKIE_ACTIONS, maximum_actions),
+    Math.min(MAX_OBSTRUCTION_ACTIONS, maximum_actions),
   );
 
   for (let attempt = 1; attempt <= bounded_maximum; attempt += 1) {
@@ -96,6 +97,98 @@ export async function dismiss_cookie_obstructions(
   }
 
   return actions;
+}
+
+/**
+ * Clears bounded, verified page obstructions before submission. Cookie/CMP
+ * handling retains its privacy-first ordering. Promotional dialogs may only
+ * be closed; their fields and offer controls are never activated.
+ */
+export async function dismiss_page_obstructions(
+  page: Page,
+  target?: Locator,
+  maximum_actions = MAX_OBSTRUCTION_ACTIONS,
+): Promise<PageObstructionAction[]> {
+  const actions: PageObstructionAction[] = [];
+  const bounded_maximum = Math.max(0, Math.min(MAX_OBSTRUCTION_ACTIONS, maximum_actions));
+  for (let attempt = 1; attempt <= bounded_maximum; attempt += 1) {
+    const cookie = await dismiss_one_cookie_obstruction(page, target, attempt);
+    const action = cookie ?? await dismiss_one_promotional_obstruction(page, target, attempt);
+    if (!action) break;
+    actions.push(action);
+    if (action.cleared) break;
+  }
+  return actions;
+}
+
+async function dismiss_one_promotional_obstruction(
+  page: Page,
+  target: Locator | undefined,
+  attempt: number,
+): Promise<PageObstructionAction | undefined> {
+  for (const frame of page.frames()) {
+    const containers = frame.locator('[role="dialog"], [aria-modal="true"], dialog, [class*="modal" i], [class*="popup" i], [class*="newsletter" i]');
+    const count = Math.min(await containers.count().catch(() => 0), 40);
+    for (let index = 0; index < count; index += 1) {
+      const blocker = containers.nth(index);
+      if (!(await blocker.isVisible().catch(() => false))) continue;
+      const text = normalize_bilingual_text(await blocker.innerText().catch(() => ""));
+      if (!PROMOTIONAL_TEXT_REQUIRED.every((pattern) => pattern.test(text))) continue;
+      const blocks = target
+        ? await container_obstructs_target(blocker, target)
+        : await is_page_obstruction(blocker);
+      if (!blocks) continue;
+      const close = await select_promotional_close_control(blocker);
+      if (!close) continue;
+      const base = {
+        kind: "promotionalModal" as const,
+        action: "close" as const,
+        label: close.label,
+        attempt,
+        detectionBasis: "promotionalText" as const,
+        blockingVerified: true,
+      };
+      try {
+        await close.control.click({ timeout: 3_000 });
+        await page.waitForTimeout(350).catch(() => undefined);
+        const verification = await verify_obstruction_cleared(blocker, target);
+        return { ...base, result: "clicked", cleared: verification.cleared, verificationReason: verification.reason };
+      } catch (error) {
+        return {
+          ...base,
+          result: "failed",
+          cleared: false,
+          verificationReason: "the selected promotional close control could not be activated",
+          reason: error instanceof Error ? error.message : String(error),
+        };
+      }
+    }
+  }
+  return undefined;
+}
+
+async function select_promotional_close_control(
+  container: Locator,
+): Promise<{ control: Locator; label: string } | undefined> {
+  const controls = container.locator('button, [role="button"], input[type="button"], a[href]');
+  const count = Math.min(await controls.count().catch(() => 0), 40);
+  for (let index = 0; index < count; index += 1) {
+    const control = controls.nth(index);
+    if (!(await control.isVisible().catch(() => false)) || !(await control.isEnabled().catch(() => false))) continue;
+    const metadata = await control.evaluate((element) => [
+      (element as HTMLElement).innerText,
+      element.getAttribute("value"),
+      element.getAttribute("aria-label"),
+      element.getAttribute("title"),
+      element.id,
+      element.className,
+    ].filter(Boolean).join(" ").trim().replace(/\s+/g, " ")).catch(() => "");
+    const normalized = normalize_bilingual_text(metadata);
+    if (/^(?:close|dismiss|סגור|סגירה|×|✕)$|(?:^|\s)(?:close|dismiss|סגור|סגירה|modal-close|popup-close|btn-close)(?:\s|$)/u.test(normalized)) {
+      return { control, label: metadata.slice(0, 160) };
+    }
+  }
+  return undefined;
 }
 
 async function dismiss_one_cookie_obstruction(
@@ -329,7 +422,7 @@ async function collect_control_candidates(
     if (ranked) {
       candidates.push({
         control,
-        label: metadata.label || metadata.identity,
+        label: (metadata.label || metadata.identity).slice(0, 160),
         ...ranked,
       });
     }

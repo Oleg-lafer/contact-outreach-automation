@@ -6,7 +6,8 @@ import type {
   NetworkSubmissionEvidenceSummary,
   SubmissionRejectionEvidence,
 } from "../src/contact_outreach_workflow/contact_channels/forms/shared_files_forms/forms_types_(Support).js";
-import { dismiss_cookie_obstructions } from "../src/contact_outreach_workflow/shared_files_orchestrator/page_obstructions_(Deterministic).js";
+import { dismiss_cookie_obstructions, dismiss_page_obstructions } from "../src/contact_outreach_workflow/shared_files_orchestrator/page_obstructions_(Deterministic).js";
+import { assess_captcha_blockage, assess_page_captcha } from "../src/contact_outreach_workflow/contact_channels/forms/shared_files_forms/captcha_detection_(Deterministic).js";
 import { assess_authoritative_submission_evidence } from "../src/contact_outreach_workflow/contact_channels/forms/pipeline/C_submission/C10_submission_evidence_assessment_(Deterministic).js";
 import {
   classify_new_submission_messages,
@@ -15,8 +16,33 @@ import {
 import { analyze_network_submission_evidence } from "../src/contact_outreach_workflow/contact_channels/forms/pipeline/C_submission/C7_network_submission_evidence_(Deterministic).js";
 import { submission_signal_rulebook } from "../src/contact_outreach_workflow/contact_channels/forms/shared_files_forms/submission_signal_rulebook_(Support).js";
 import { score_submission_signals } from "../src/contact_outreach_workflow/contact_channels/forms/shared_files_forms/submission_signal_scoring_(Deterministic).js";
+import { create_browser_dialog_controller } from "../src/contact_outreach_workflow/shared_files_orchestrator/browser_dialog_controller_(Support).js";
 
 const click_timestamp = "2026-07-23T12:00:00.000Z";
+
+test("native dialogs are resolved with submit-scoped confirmation policy", async () => {
+  await with_page(async (page) => {
+    const controller = create_browser_dialog_controller();
+    controller.attach(page);
+    await page.setContent(`<button id="alert" onclick="alert('Thank you, message received')">Alert</button>
+      <button id="confirm" onclick="confirm('Send now?')">Confirm</button>
+      <button id="prompt" onclick="prompt('Secret?')">Prompt</button>`);
+
+    const marker = controller.beginSubmit();
+    await page.locator("#confirm").click();
+    controller.endSubmit();
+    await page.locator("#alert").click();
+    await page.locator("#prompt").click();
+
+    const records = controller.recordsSince(marker);
+    assert.deepEqual(records.map((record) => [record.type, record.phase, record.action, record.result]), [
+      ["confirm", "submit", "accept", "handled"],
+      ["alert", "browsing", "dismiss", "handled"],
+      ["prompt", "browsing", "dismiss", "handled"],
+    ]);
+    controller.detachAll();
+  });
+});
 
 test("Round 3 recognizes only bounded provider submission evidence", () => {
   const oscar = analyze_network_submission_evidence(
@@ -355,6 +381,128 @@ test("Round 3 recognizes Hebrew success and rejection messages", async () => {
     "captcha",
     "generic",
   ]);
+});
+
+test("Round 3 classifies evidenced Hebrew rejection phrases and preserves contradictions", () => {
+  for (const text of [
+    "שליחת ההודעה נכשלה.",
+    "הייתה בעיה בשליחה, יש לעיין בשדות למטה,",
+  ]) {
+    const rejectionEvidence = classify_new_submission_messages([{
+      selector: '[role="alert"]',
+      frameUrl: "https://fixture.test/contact",
+      text,
+    }]);
+    assert.equal(rejectionEvidence[0]?.category, "generic", text);
+
+    const rejected = assess_authoritative_submission_evidence({
+      visibleEvidence: { confirmationEvidence: "none", rejectionEvidence, newMessages: [] },
+      networkEvidence: no_network_evidence(),
+      captchaBlocked: false,
+    });
+    assert.equal(rejected.disposition, "rejected", text);
+
+    const contradictory = assess_authoritative_submission_evidence({
+      visibleEvidence: { confirmationEvidence: "none", rejectionEvidence, newMessages: [] },
+      networkEvidence: {
+        ...no_network_evidence(),
+        found: true,
+        confirmsSubmission: true,
+        confidence: "strong",
+        providerRuleId: "existing-known-form-service",
+        bestRequest: { method: "POST", status: 200, url: "https://fixture.test/submit", resourceType: "xhr" },
+      },
+      captchaBlocked: false,
+    });
+    assert.equal(contradictory.disposition, "contradictory", text);
+    assert.equal(contradictory.confirmed, false, text);
+    assert.equal(contradictory.signalScore.hasBothPolarities, true, text);
+  }
+});
+
+test("Round 3 classifies evidenced bilingual validation and anti-spam phrases", () => {
+  const evidence = classify_new_submission_messages([
+    {
+      selector: '[role="alert"]',
+      frameUrl: "https://fixture.test/contact",
+      text: "קיימת שגיאה בשדה אחד או יותר. נא לבדוק ולנסות שוב.",
+    },
+    {
+      selector: ".validation-error",
+      frameUrl: "https://fixture.test/contact",
+      text: "One or more fields have an error. Please check and try again.",
+    },
+    {
+      selector: ".server-error",
+      frameUrl: "https://fixture.test/contact",
+      text: "Forbidden. Your IP belongs to a high spam risk network. Please, try again without VPN. Anti-Spam by CleanTalk.",
+    },
+  ]);
+  assert.deepEqual(evidence.map((item) => item.category), [
+    "validation",
+    "validation",
+    "server",
+  ]);
+  assert.equal(evidence[2]?.patternId, "anti-spam-server-rejection");
+});
+
+test("Round 3 classifies plural Hebrew robot verification as a CAPTCHA blocker", async () => {
+  await with_page(async (page) => {
+    const before = await assess_page_captcha(page);
+    await page.setContent('<div class="captcha-error" role="alert">נא אשרו שאתם לא רובוט</div>');
+    const blockage = await assess_captcha_blockage(page, before, true);
+    assert.equal(blockage.blocked, true);
+    const rejectionEvidence = classify_new_submission_messages([{
+      selector: ".captcha-error",
+      frameUrl: "https://fixture.test/contact",
+      text: "נא אשרו שאתם לא רובוט",
+    }]);
+    const assessed = assess_authoritative_submission_evidence({
+      visibleEvidence: { confirmationEvidence: "none", rejectionEvidence, newMessages: [] },
+      networkEvidence: no_network_evidence(),
+      captchaBlocked: blockage.blocked,
+    });
+    assert.equal(assessed.disposition, "captchaBlocked");
+    assert.equal(assessed.failureKind, "submission.captcha");
+  });
+});
+
+test("Round 3 clears verified Hebrew cookie and promotional obstructions safely", async () => {
+  await with_page(async (page) => {
+    await page.setContent(`
+      <button id="submit" style="position:fixed;left:40px;top:40px">שליחה</button>
+      <div role="dialog" aria-modal="true" style="position:fixed;inset:0;z-index:10">
+        <p>קובצי Cookies אנחנו מעוניינים להשתמש בקובצי Cookies כדי לשפר את חווית השימוש שלך</p>
+        <button onclick="this.parentElement.remove()">אישור הכול</button>
+        <button onclick="this.parentElement.remove()">הכרחיים בלבד</button>
+        <button onclick="this.parentElement.remove()">דחה</button>
+      </div>`);
+    const cookies = await dismiss_page_obstructions(page, page.locator("#submit"));
+    assert.equal(cookies[0]?.kind, "cookieConsent");
+    assert.equal(cookies[0]?.action, "reject");
+    assert.equal(cookies[0]?.cleared, true);
+
+    await page.setContent(`
+      <button id="submit" style="position:fixed;left:40px;top:40px">שליחה</button>
+      <div id="offer" role="dialog" aria-modal="true" style="position:fixed;inset:0;z-index:10">
+        <p>10% הנחה בקנייה ראשונה באתר. הצטרפו לניוזלטר שלנו.</p>
+        <input id="newsletter-email"><button id="join" onclick="window.joined=true">הצטרפו</button>
+        <button aria-label="סגור" onclick="window.closedOffer=true;this.parentElement.remove()">×</button>
+      </div>`);
+    const promotional = await dismiss_page_obstructions(page, page.locator("#submit"));
+    assert.equal(promotional[0]?.kind, "promotionalModal");
+    assert.equal(promotional[0]?.detectionBasis, "promotionalText");
+    assert.equal(promotional[0]?.action, "close");
+    assert.deepEqual(await page.evaluate(() => ({
+      joined: Boolean((window as typeof window & { joined?: boolean }).joined),
+      closed: Boolean((window as typeof window & { closedOffer?: boolean }).closedOffer),
+    })), { joined: false, closed: true });
+
+    await page.setContent(`
+      <button id="submit">שליחה</button>
+      <section><p>קבלו הנחה כאשר הצטרפו לניוזלטר שלנו</p><button>הצטרפו</button></section>`);
+    assert.deepEqual(await dismiss_page_obstructions(page, page.locator("#submit")), []);
+  });
 });
 
 test("Round 3 handles Hebrew cookie controls with privacy-first ordering", async () => {

@@ -32,7 +32,8 @@ CREATE TABLE IF NOT EXISTS `OUTREACH_attempts` (
     'running',
     'finished',
     'run_failed',
-    'skipped'
+    'skipped',
+    'timed_out'
   ) NOT NULL DEFAULT 'queued',
   `forms_result` ENUM('success', 'partial', 'inconclusive', 'failed') NULL,
   `email_discovery_result` ENUM('success', 'partial', 'inconclusive', 'failed') NULL,
@@ -56,6 +57,6 @@ CREATE TABLE IF NOT EXISTS `OUTREACH_attempts` (
     CHECK (
       (`execution_status` IN ('queued', 'running') AND `completed_time` IS NULL)
       OR
-      (`execution_status` IN ('finished', 'run_failed', 'skipped') AND `completed_time` IS NOT NULL)
+      (`execution_status` IN ('finished', 'run_failed', 'skipped', 'timed_out') AND `completed_time` IS NOT NULL)
     )
 ) ENGINE=InnoDB;

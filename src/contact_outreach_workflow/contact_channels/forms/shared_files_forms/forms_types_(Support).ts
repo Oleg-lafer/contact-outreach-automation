@@ -230,6 +230,7 @@ export interface ContactFormAssessmentSignals {
   visibleControlCount: number;
   hasMessage: boolean;
   hasEmail: boolean;
+  hasPhone: boolean;
   hasIdentity: boolean;
   hasBusinessOrProject: boolean;
   hasSubmit: boolean;

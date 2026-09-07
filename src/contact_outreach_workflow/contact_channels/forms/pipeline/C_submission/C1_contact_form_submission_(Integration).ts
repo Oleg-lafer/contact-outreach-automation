@@ -19,7 +19,10 @@ import {
   type InactiveRequiredControlLease,
   type RequiredControlRestorationResult,
 } from "../../shared_files_forms/required_control_inventory_(Deterministic).js";
-import { reconcile_population_submission_handoff } from "../B_population/B1_contact_form_population_(Integration).js";
+import {
+  reconcile_population_submission_handoff,
+  verify_message_integrity,
+} from "../B_population/B1_contact_form_population_(Integration).js";
 import type {
   ButtonControlDebugInfo,
   ButtonClickAuditEvent,
@@ -42,13 +45,14 @@ import {
   collect_visible_message_candidates,
   create_submission_debug_context,
   finalize_submission_debug,
-  safe_page_screenshot,
 } from "./C5_submission_observability_(Support).js";
 import {
   assess_effective_pre_submit_validity,
   click_confirmation_control_if_present,
   collect_invalid_controls,
+  classify_new_submission_messages,
   has_visible_success_message,
+  visible_success_message_matches,
   wait_for_submission_confirmation,
 } from "./C6_submission_confirmation_(Deterministic).js";
 import { analyze_network_submission_evidence } from "./C7_network_submission_evidence_(Deterministic).js";
@@ -159,12 +163,13 @@ async function submit_and_assess_contact_form_internal(
     if ("reason" in reconciled) {
       return finalize_unattempted_submission({
         browserSession: browser_session,
+        form: candidate.form,
         debugContext: debug_context,
         urlBeforeSubmission: url_before_submission,
         submitCandidates: [],
         buttonAuditEvents: button_audit_events,
         reason: `population-to-submission handoff failed: ${reconciled.reason}`,
-        failureKind: "submission.validation",
+        failureKind: reconciled.failureKind ?? "submission.validation",
         validationBlocked: true,
         aiActions: [],
         obstructionActions: browser_session.obstructionActions ?? [],
@@ -253,19 +258,8 @@ async function submit_and_assess_contact_form_internal(
     form: candidate.form,
     expectedValues: browser_session.redactionValues ?? [],
   });
-  await deep_debug?.captureScreenshot(
-    page,
-    "submission",
-    "10-after-submit-selection-and-preflight",
-  );
-
   if (debug_context) {
     await mkdir(debug_context.absoluteArtifactDirectory, { recursive: true });
-    await safe_page_screenshot(
-      page,
-      debug_context.beforeSubmitScreenshotPath,
-      browser_session.redactionValues,
-    );
   }
 
   let stagehand_proposal: StagehandSubmissionProposal | undefined;
@@ -314,6 +308,7 @@ async function submit_and_assess_contact_form_internal(
         describe_original_submit_candidate(submit_control_result);
       return finalize_unattempted_submission({
         browserSession: browser_session,
+        form: candidate.form,
         debugContext: debug_context,
         urlBeforeSubmission: url_before_submission,
         submitCandidates: submit_control_result.candidates ?? [],
@@ -392,6 +387,7 @@ async function submit_and_assess_contact_form_internal(
       });
       return finalize_unattempted_submission({
         browserSession: browser_session,
+        form: candidate.form,
         debugContext: debug_context,
         urlBeforeSubmission: url_before_submission,
         submitCandidates: submit_control_result.candidates ?? [],
@@ -425,6 +421,7 @@ async function submit_and_assess_contact_form_internal(
       });
       return finalize_unattempted_submission({
         browserSession: browser_session,
+        form: candidate.form,
         debugContext: debug_context,
         urlBeforeSubmission: url_before_submission,
         submitCandidates: submit_control_result.candidates ?? [],
@@ -474,6 +471,7 @@ async function submit_and_assess_contact_form_internal(
       });
       return finalize_unattempted_submission({
         browserSession: browser_session,
+        form: candidate.form,
         debugContext: debug_context,
         urlBeforeSubmission: url_before_submission,
         submitCandidates: submit_control_result.candidates ?? [],
@@ -519,6 +517,7 @@ async function submit_and_assess_contact_form_internal(
       });
       return finalize_unattempted_submission({
         browserSession: browser_session,
+        form: candidate.form,
         debugContext: debug_context,
         urlBeforeSubmission: url_before_submission,
         submitCandidates: submit_control_result.candidates ?? [],
@@ -565,6 +564,7 @@ async function submit_and_assess_contact_form_internal(
         });
         return finalize_unattempted_submission({
           browserSession: browser_session,
+          form: candidate.form,
           debugContext: debug_context,
           urlBeforeSubmission: url_before_submission,
           submitCandidates: submit_control_result.candidates ?? [],
@@ -655,6 +655,7 @@ async function submit_and_assess_contact_form_internal(
       });
       return finalize_unattempted_submission({
         browserSession: browser_session,
+        form: candidate.form,
         debugContext: debug_context,
         urlBeforeSubmission: url_before_submission,
         submitCandidates: recovered_submit_control_result.candidates ?? [],
@@ -721,6 +722,7 @@ async function submit_and_assess_contact_form_internal(
     });
     return finalize_unattempted_submission({
       browserSession: browser_session,
+      form: candidate.form,
       debugContext: debug_context,
       urlBeforeSubmission: url_before_submission,
       submitCandidates: submit_control_result.candidates ?? [],
@@ -779,6 +781,7 @@ async function submit_and_assess_contact_form_internal(
     });
     return finalize_unattempted_submission({
       browserSession: browser_session,
+      form: candidate.form,
       debugContext: debug_context,
       urlBeforeSubmission: url_before_submission,
       submitCandidates: submit_control_result.candidates ?? [],
@@ -836,19 +839,83 @@ async function submit_and_assess_contact_form_internal(
       populationRecoveryAttempted: population_recovery_attempted,
     },
   });
-  if (debug_context) {
-    await safe_page_screenshot(
-      page,
-      debug_context.beforeSubmitScreenshotPath,
-      browser_session.redactionValues,
+  const enforce_final_message_integrity = async (
+    label: string,
+  ): Promise<SubmissionAssessment | undefined> => {
+    if (!debug_options.contactRequest) return undefined;
+    const evidence = await verify_message_integrity(
+      debug_options.contactRequest,
+      candidate,
+      debug_options.populationHandoff,
     );
-  }
-
+    await deep_debug?.writeJson("submission/final-message-integrity.json", evidence);
+    deep_debug?.record({
+      stage: "submission",
+      substage: "message-integrity",
+      operation: "verify-final-message-before-activation",
+      outcome: evidence.passed ? "succeeded" : "blocked",
+      reason: evidence.reason,
+      url: page.url(),
+      frameUrl: candidate.frame.url(),
+      data: {
+        checkpoint: label,
+        controlIndex: evidence.controlIndex,
+        identity: evidence.identity,
+        expectedLength: evidence.expectedValue.length,
+        actualLength: evidence.actualValue?.length ?? 0,
+        connected: evidence.connected,
+        belongsToSelectedForm: evidence.belongsToSelectedForm,
+        enabled: evidence.enabled,
+        editable: evidence.editable,
+        submitRelevant: evidence.submitRelevant,
+        metadataMatches: evidence.metadataMatches,
+        backingControlFound: evidence.backingControlFound,
+        backingControlMatches: evidence.backingControlMatches,
+        matchesExpected: evidence.passed,
+      },
+    });
+    await deep_debug?.captureFormSnapshot({
+      stage: "submission",
+      label,
+      form: candidate.form,
+      expectedValues: browser_session.redactionValues ?? [],
+      extra: { messageIntegrity: evidence },
+    });
+    await deep_debug?.captureScreenshot(
+      page,
+      "submission",
+      "final-message-integrity",
+      { locator: candidate.form },
+    );
+    if (evidence.passed) return undefined;
+    return finalize_unattempted_submission({
+      browserSession: browser_session,
+      form: candidate.form,
+      debugContext: debug_context,
+      urlBeforeSubmission: url_before_submission,
+      submitCandidates: submit_control_result.candidates ?? [],
+      buttonAuditEvents: button_audit_events,
+      reason: `message integrity blocked submission: ${evidence.reason}; expected length ${evidence.expectedValue.length}, actual length ${evidence.actualValue?.length ?? 0}`,
+      failureKind: "submission.message_integrity",
+      validationBlocked: true,
+      preSubmitValidation: pre_submit_validation_evidence,
+      aiActions: stagehand_ai_actions,
+      obstructionActions: browser_session.obstructionActions ?? [],
+    });
+  };
   if (stagehand_proposal) {
+    const integrity_failure = await enforce_final_message_integrity(
+      "20-final-message-integrity-before-stagehand-submit",
+    );
+    if (integrity_failure) {
+      await release_stagehand_submission_proposal_if_present(stagehand_proposal);
+      return integrity_failure;
+    }
+    const stagehand_dialog_sequence = browser_session.dialogController?.beginSubmit() ?? 0;
     const stagehand_result = await activate_stagehand_submission_proposal(
       stagehand_proposal,
       button_audit_events,
-    );
+    ).finally(() => browser_session.dialogController?.endSubmit());
     if (
       !stagehand_result.attempted ||
       !stagehand_result.submitControlResult?.control ||
@@ -856,6 +923,7 @@ async function submit_and_assess_contact_form_internal(
     ) {
       return finalize_unattempted_submission({
         browserSession: browser_session,
+        form: candidate.form,
         debugContext: debug_context,
         urlBeforeSubmission: url_before_submission,
         submitCandidates: submit_control_result.candidates ?? [],
@@ -893,6 +961,7 @@ async function submit_and_assess_contact_form_internal(
       captchaBeforeSubmission: captcha_before_submission,
       obstructionActions: browser_session.obstructionActions ?? [],
       preSubmitValidation: pre_submit_validation_evidence,
+      dialogSequence: stagehand_dialog_sequence,
     });
   }
 
@@ -907,6 +976,10 @@ async function submit_and_assess_contact_form_internal(
     submit_control_result.control!,
     submit_control_result,
   );
+  const integrity_failure = await enforce_final_message_integrity(
+    "20-final-message-integrity-before-submit-click",
+  );
+  if (integrity_failure) return integrity_failure;
   const submit_button_event = await create_button_click_audit_event(
     page,
     "submit",
@@ -928,20 +1001,16 @@ async function submit_and_assess_contact_form_internal(
       audit: submit_button_event,
     },
   });
-  await deep_debug?.captureFormSnapshot({
-    stage: "submission",
-    label: "20-immediately-before-submit-click",
-    form: candidate.form,
-    expectedValues: browser_session.redactionValues ?? [],
-  });
-
   let click_error: string | undefined;
+  const dialog_sequence = browser_session.dialogController?.beginSubmit() ?? 0;
   try {
     await submit_control_result.control!.click({ timeout: ACTION_TIMEOUT_MS });
     mark_button_click_succeeded(submit_button_event);
   } catch (error) {
     click_error = describe_error(error);
     mark_button_click_failed(submit_button_event, click_error);
+  } finally {
+    browser_session.dialogController?.endSubmit();
   }
   deep_debug?.record({
     stage: "submission",
@@ -971,6 +1040,7 @@ async function submit_and_assess_contact_form_internal(
     captchaBeforeSubmission: captcha_before_submission,
     obstructionActions: browser_session.obstructionActions ?? [],
     preSubmitValidation: pre_submit_validation_evidence,
+    dialogSequence: dialog_sequence,
   });
 }
 
@@ -1162,6 +1232,7 @@ async function release_stagehand_submission_proposal_if_present(
 
 interface FinalizeUnattemptedSubmissionInput {
   browserSession: BrowserSession;
+  form: ContactFormCandidate["form"];
   debugContext: SubmissionDebugContext | undefined;
   urlBeforeSubmission: string;
   submitCandidates: SubmitCandidateDebugInfo[];
@@ -1180,6 +1251,7 @@ interface FinalizeUnattemptedSubmissionInput {
 
 async function finalize_unattempted_submission({
   browserSession,
+  form,
   debugContext,
   urlBeforeSubmission,
   submitCandidates,
@@ -1196,6 +1268,21 @@ async function finalize_unattempted_submission({
   captchaAssessment,
 }: FinalizeUnattemptedSubmissionInput): Promise<SubmissionAssessment> {
   const deep_debug = browserSession.deepDebug;
+  if (deep_debug) {
+    const screenshot = await deep_debug.captureScreenshot(
+      browserSession.page,
+      "submission",
+      "pre-submit",
+      { locator: form },
+    );
+    if (!screenshot) {
+      await deep_debug.captureScreenshot(
+        browserSession.page,
+        "submission",
+        "pre-submit",
+      );
+    }
+  }
   deep_debug?.record({
     stage: "submission",
     substage: "result",
@@ -1274,6 +1361,7 @@ interface AssessAttemptedSubmissionInput {
   captchaBeforeSubmission: CaptchaAssessment;
   obstructionActions: NonNullable<BrowserSession["obstructionActions"]>;
   preSubmitValidation: PreSubmitValidationDebugEvidence;
+  dialogSequence: number;
 }
 
 async function assess_attempted_submission({
@@ -1293,6 +1381,7 @@ async function assess_attempted_submission({
   captchaBeforeSubmission,
   obstructionActions,
   preSubmitValidation,
+  dialogSequence,
 }: AssessAttemptedSubmissionInput): Promise<SubmissionAssessment> {
   const page = browserSession.page;
   const deep_debug = browserSession.deepDebug;
@@ -1319,7 +1408,6 @@ async function assess_attempted_submission({
     expectedValues: browserSession.redactionValues ?? [],
     extra: { messages: messages_after_two_seconds },
   });
-  await deep_debug?.captureScreenshot(page, "submission", "30-after-submit-2s");
   deep_debug?.record({
     stage: "submission",
     substage: "post-click",
@@ -1328,14 +1416,6 @@ async function assess_attempted_submission({
     url: page.url(),
     data: { messages: messages_after_two_seconds },
   });
-  if (debugContext) {
-    await safe_page_screenshot(
-      page,
-      debugContext.afterSubmit2sScreenshotPath,
-      browserSession.redactionValues,
-    );
-  }
-
   const submit_click_dispatched = submitButtonEvent.clickResult === "clicked";
   const verified_submit_target = true;
   let captcha_assessment = await assess_captcha_blockage(
@@ -1383,6 +1463,17 @@ async function assess_attempted_submission({
     messagesBeforeSubmission,
     browserSession.redactionValues ?? [],
   );
+  const post_submit_dialogs = browserSession.dialogController?.recordsSince(dialogSequence) ?? [];
+  const dialog_messages: MessageCandidateDebugInfo[] = post_submit_dialogs
+    .filter((record) => record.phase === "submit" && record.result === "handled" && record.message.length > 0)
+    .map((record) => ({ selector: "native-dialog", text: record.message, frameUrl: record.pageUrl }));
+  if (dialog_messages.some((message) => visible_success_message_matches(message.text))) {
+    visible_confirmation_evidence.confirmationEvidence = "successText";
+  }
+  visible_confirmation_evidence.rejectionEvidence.push(
+    ...classify_new_submission_messages(dialog_messages, browserSession.redactionValues ?? []),
+  );
+  visible_confirmation_evidence.newMessages.push(...dialog_messages);
   const messages_after_confirmation =
     await collect_visible_message_candidates(page);
   deep_debug?.record({
@@ -1401,6 +1492,7 @@ async function assess_attempted_submission({
       rejectionEvidence: visible_confirmation_evidence.rejectionEvidence,
       newMessageCandidates: visible_confirmation_evidence.newMessages,
       messageCandidates: messages_after_confirmation,
+      dialogs: post_submit_dialogs,
     },
   });
   const post_submit_messages = merge_message_candidates(
@@ -1512,11 +1604,18 @@ async function assess_attempted_submission({
       postSubmitMessages: post_submit_messages,
     },
   });
-  await deep_debug?.captureScreenshot(
-    page,
-    "confirmation",
-    "99-final-confirmation-state",
-  );
+  if (
+    deep_debug &&
+    !confirmed &&
+    terminal_evidence.disposition !== "rejected" &&
+    terminal_evidence.disposition !== "captchaBlocked"
+  ) {
+    await deep_debug.captureScreenshot(
+      page,
+      "confirmation",
+      "terminal-state",
+    );
+  }
   deep_debug?.record({
     stage: "submission",
     substage: "result",

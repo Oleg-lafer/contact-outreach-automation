@@ -64,8 +64,10 @@ are allowed so retries and history remain visible.
 - `failed` and `partial` attempts may be retried.
 
 `execution_status` describes lifecycle only: `queued`, `running`, `finished`,
-`run_failed`, or `skipped`. `finished` means the run ended and does not imply
+`run_failed`, `skipped`, or `timed_out`. `finished` means the run ended and does not imply
 channel success. `run_failed` means macro coordination did not complete.
+`timed_out` means contact-route scanning exceeded its bounded deadline; channel
+results remain null and retry-unsuccessful runs do not select it automatically.
 
 The three nullable result columns independently store `success`, `partial`,
 `inconclusive`, or `failed`. They remain null for `run_failed` and `skipped`.
@@ -82,9 +84,9 @@ results, detailed channel JSON, reason, and completion time.
 - Keep primary keys on all three ID columns, the website-to-campaign foreign
   key, and the attempt-to-website foreign key.
 - Keep `OUTREACH_websites.normalized_domain` unique.
-- Allow only `queued`, `running`, `finished`, `run_failed`, and `skipped`
+- Allow only `queued`, `running`, `finished`, `run_failed`, `skipped`, and `timed_out`
   execution statuses.
-- Require `completed_time` for finished, run-failed, and skipped attempts;
+- Require `completed_time` for finished, run-failed, skipped, and timed-out attempts;
   queued and running attempts must not have it.
 - Keep the unique normalized-domain index and the
   `(website_id, forms_result)` resend/history index and the website

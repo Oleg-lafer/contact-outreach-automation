@@ -90,6 +90,7 @@ export async function run_forms_workflow(
         targetUrl: contact_request.websiteUrl,
         engine: requested_engine,
         redactionValues: contact_request_redaction_values(contact_request),
+        contactValues: contact_request_debug_values(contact_request),
         environment: process.env,
       });
       owns_deep_debug = true;
@@ -106,6 +107,7 @@ export async function run_forms_workflow(
           ? { artifactDirectory: workflow_artifact_directory(options, deep_debug) }
           : {}),
         initialRoutes: initial_routes,
+        ...(deep_debug ? { deepDebug: deep_debug } : {}),
       },
     );
     const page_signals = await collect_discovery_page_signals(
@@ -171,11 +173,6 @@ export async function run_forms_workflow(
         form: discovery_result.candidate.form,
         expectedValues: contact_request_redaction_values(contact_request),
       });
-      await deep_debug.captureScreenshot(
-        browser_session.page,
-        "population",
-        "00-discovery-candidate-entry",
-      );
     }
 
     let population_result = await populate_contact_form(
@@ -231,11 +228,14 @@ export async function run_forms_workflow(
           blockingReason: population_result.blockingReason ?? null,
         },
       });
-      await deep_debug.captureScreenshot(
-        browser_session.page,
-        "population",
-        "99-population-final",
-      );
+      if (population_result.blockingReason) {
+        await deep_debug.captureScreenshot(
+          browser_session.page,
+          "population",
+          "population-final",
+          { locator: discovery_result.candidate.form },
+        );
+      }
       if (population_result.submissionHandoff) {
         await deep_debug.writeJson("handoff/population-created.json", {
           frameUrl: population_result.submissionHandoff.frameUrl,
@@ -358,6 +358,11 @@ export async function run_forms_workflow(
   } catch (error) {
     const failure_reason = describe_error(error);
     workflow_failure = failure_reason;
+    await deep_debug?.captureScreenshot(
+      browser_session.page,
+      "runtime",
+      "terminal-state",
+    );
     deep_debug?.record({
       stage: "orchestrator",
       substage: "exception",
@@ -434,6 +439,21 @@ function contact_request_redaction_values(
     contact_request.website,
     contact_request.country,
   ].filter((value): value is string => Boolean(value));
+}
+
+function contact_request_debug_values(contact_request: ContactRequest): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries({
+      name: contact_request.name,
+      email: contact_request.email,
+      phone: contact_request.phone,
+      message: contact_request.message,
+      company: contact_request.company,
+      role: contact_request.role,
+      website: contact_request.website,
+      country: contact_request.country,
+    }).filter((entry): entry is [string, string] => Boolean(entry[1])),
+  );
 }
 
 function population_artifact_directory(

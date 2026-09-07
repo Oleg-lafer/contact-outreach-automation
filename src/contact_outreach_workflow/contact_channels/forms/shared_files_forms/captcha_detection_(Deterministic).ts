@@ -1,5 +1,6 @@
 import type { Locator, Page } from "playwright";
 import type { NetworkDebugRecord } from "./forms_types_(Support).js";
+import { normalize_bilingual_text } from "../../../shared_files_orchestrator/bilingual_text_(Deterministic).js";
 
 /*
  * CAPTCHA integration is not itself a failure. The workflow records whether
@@ -24,7 +25,7 @@ const CAPTCHA_ERROR_SELECTOR = [
 ].join(", ");
 
 const CAPTCHA_BLOCKING_TEXT =
-  /captcha|recaptcha|hcaptcha|turnstile|verify (?:that )?you(?: are|'re)|not a robot|robot verification|verification (?:is )?required|verification failed/i;
+  /captcha|recaptcha|hcaptcha|turnstile|verify (?:that )?you(?: are|'re)|not a robot|robot verification|verification (?:is )?required|verification failed|(?:נא )?אשרו? שאתם לא רובוט/u;
 
 export type CaptchaPresence = "none" | "passive" | "interactive";
 
@@ -262,7 +263,7 @@ async function find_visible_captcha_errors(page: Page): Promise<string[]> {
       const text = ((await candidate.innerText().catch(() => "")) || "")
         .trim()
         .replace(/\s+/g, " ");
-      if (text && CAPTCHA_BLOCKING_TEXT.test(text)) {
+      if (text && CAPTCHA_BLOCKING_TEXT.test(normalize_bilingual_text(text))) {
         errors.add(text.slice(0, 300));
       }
     }

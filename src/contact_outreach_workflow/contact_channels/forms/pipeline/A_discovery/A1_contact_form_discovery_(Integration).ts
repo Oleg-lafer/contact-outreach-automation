@@ -17,6 +17,7 @@ import type {
   FormDiscoveryResult,
   ContactFormCandidate,
 } from "../../shared_files_forms/forms_types_(Support).js";
+import type { DeepDebugContext } from "../../shared_files_forms/deep_debug_types_(Support).js";
 import { discover_contact_form_with_stagehand_fallback } from "./A2_stagehand_discovery_fallback_(LLM).js";
 import {
   DiscoveryDebugCollector,
@@ -74,6 +75,7 @@ export async function discover_contact_form(
   options: {
     artifactDirectory?: string | undefined;
     initialRoutes?: ContactRouteDiscoveryResult | undefined;
+    deepDebug?: DeepDebugContext | undefined;
   } = {},
 ): Promise<FormDiscoveryResult> {
   const collector = new DiscoveryDebugCollector(browser_session.page.url());
@@ -89,6 +91,7 @@ export async function discover_contact_form(
     result,
     collector,
     options.artifactDirectory,
+    options.deepDebug,
   );
   if (!finalized.candidate && !finalized.failureKind) {
     finalized.failureKind = classify_discovery_failure_kind(finalized);
@@ -111,6 +114,9 @@ function classify_discovery_failure_kind(
   }
   if (/booking.only|booking|cross.origin/.test(reason)) {
     return "discovery.booking_only";
+  }
+  if (/message field/.test(reason)) {
+    return "population.message_not_found";
   }
   if (/rejected|newsletter|subscription|search|login|message field/.test(reason)) {
     return "discovery.rejected_form";

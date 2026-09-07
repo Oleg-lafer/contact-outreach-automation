@@ -189,6 +189,7 @@ export interface SiteEvidence {
 }
 
 export interface BrowserStageArtifactEvidence {
+  schemaVersion: 1 | 2 | 3;
   entered: boolean;
   outcome: "LOADED" | "LOADED_AFTER_TIMEOUT" | "FAILED" | "NOT_ENTERED" | "";
   phase: string;
@@ -204,12 +205,24 @@ export interface BrowserStageArtifactEvidence {
   meaningfulContent: boolean | undefined;
   browserConnected: boolean | undefined;
   pageClosed: boolean | undefined;
-  category: "OUR_SYSTEM_FAILURE" | "DESTINATION_FAILURE" | "ACCESS_RESTRICTION" | "UNDETERMINED" | "";
+  category: "OUR_AUTOMATION" | "DESTINATION_WEBSITE" | "ACCESS_RESTRICTION" | "NETWORK_INFRASTRUCTURE" | "UNDETERMINED" | "";
   responsibleParty: string;
   subcategory: string;
   confidence: string;
   ruleId: string;
   reason: string;
+  classificationBasis: string;
+  strongestSupportingEvidence: string;
+  strongestEvidenceAgainst: string;
+  missingEvidence: string[];
+  timeoutSource: string;
+  lastProgressAt: string;
+  lastProgressType: string;
+  attemptCount: number;
+  selectedCandidateKind: string;
+  pageQuality: string;
+  recoveryEligible: boolean;
+  recovered: boolean;
   artifactPath: string;
   source: "structured_text" | "debug_artifact";
 }

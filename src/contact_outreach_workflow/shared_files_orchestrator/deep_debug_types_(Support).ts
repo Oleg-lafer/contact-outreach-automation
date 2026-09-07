@@ -48,10 +48,16 @@ export interface DeepDebugFinalizeInput {
   failure?: string;
 }
 
+export type DeepDebugContactValues = Partial<Record<
+  "name" | "email" | "phone" | "message" | "company" | "role" | "website" | "country",
+  string
+>>;
+
 export interface DeepDebugContext {
   readonly runId: string;
   readonly artifactDirectory: string;
   readonly redactionValues: readonly string[];
+  readonly contactValues: DeepDebugContactValues;
   record(event: DeepDebugEventInput): void;
   writeJson(relativePath: string, value: unknown): Promise<string | undefined>;
   captureFormSnapshot(options: {
@@ -81,5 +87,6 @@ export interface DeepDebugCreateOptions {
   targetUrl: string;
   engine: "playwright" | "stagehand";
   redactionValues: readonly string[];
+  contactValues?: DeepDebugContactValues;
   environment?: NodeJS.ProcessEnv;
 }

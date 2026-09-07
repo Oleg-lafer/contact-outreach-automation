@@ -13,6 +13,8 @@ const CAMPAIGN_CONTENT_MIGRATION_PATH =
   "database/migrations/003_normalize_campaign_content.sql";
 const WEBSITE_CAMPAIGN_MIGRATION_PATH =
   "database/migrations/004_assign_websites_to_campaigns.sql";
+const TIMED_OUT_STATUS_MIGRATION_PATH =
+  "database/migrations/005_add_timed_out_execution_status.sql";
 const RESULT_COLUMNS = [
   "forms_result",
   "email_discovery_result",
@@ -88,6 +90,11 @@ async function main(): Promise<void> {
     if (ownership_state === "legacy") {
       await execute_migration(connection, WEBSITE_CAMPAIGN_MIGRATION_PATH);
     }
+    const execution_status_type = await read_execution_status_type(connection);
+    const timed_out_status_missing = !execution_status_type.includes("'timed_out'");
+    if (timed_out_status_missing) {
+      await execute_migration(connection, TIMED_OUT_STATUS_MIGRATION_PATH);
+    }
 
     const final_state = await read_attempt_schema_state(connection);
     if (final_state !== "final") {
@@ -102,14 +109,31 @@ async function main(): Promise<void> {
         `Website campaign migration ended in unexpected state: ${final_ownership_state}.`,
       );
     }
+    const final_execution_status_type = await read_execution_status_type(connection);
+    if (!final_execution_status_type.includes("'timed_out'")) {
+      throw new Error("Outreach database migration did not add the timed_out lifecycle status.");
+    }
     console.log(
-      initial_state === "legacy" || ownership_state === "legacy"
+      initial_state === "legacy" || ownership_state === "legacy" || timed_out_status_missing
         ? "Applied pending outreach database migrations."
         : "Outreach database schema is already current.",
     );
   } finally {
     await connection.end();
   }
+}
+
+async function read_execution_status_type(connection: Connection): Promise<string> {
+  const database_name = required_value(process.env.DB_NAME, "DB_NAME");
+  const [rows] = await connection.execute<ColumnRow[]>(
+    `SELECT TABLE_NAME, COLUMN_NAME, COLUMN_TYPE
+     FROM information_schema.COLUMNS
+     WHERE TABLE_SCHEMA = ?
+       AND TABLE_NAME = 'OUTREACH_attempts'
+       AND COLUMN_NAME = 'execution_status'`,
+    [database_name],
+  );
+  return rows[0]?.COLUMN_TYPE.toLowerCase() ?? "";
 }
 
 async function read_website_campaign_schema_state(

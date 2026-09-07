@@ -1,20 +1,23 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
+import { gunzipSync } from "node:zlib";
+import type { Page } from "playwright";
 import {
   resolve_cli_options,
   run_contact_outreach_workflow,
 } from "../src/contact_outreach_workflow/contact_outreach_orchestrator.js";
 import { create_deep_debug_context } from "../src/contact_outreach_workflow/contact_channels/forms/shared_files_forms/deep_debug_observability_(Support).js";
+import { discover_contact_routes } from "../src/contact_outreach_workflow/orchestrator/C_contact_routes/C1_contact_route_discovery_(Integration).js";
 
 const CONTACT_VALUES = {
   name: "Deep Debug Person",
   email: "deep-debug-secret@example.test",
   phone: "+1 202 555 0199",
-  message: "This exact message must never appear in artifacts.",
+  message: "This exact message must appear in deep-debug artifacts.",
 };
 
 let server: Server;
@@ -56,7 +59,7 @@ after(async () => {
 });
 
 test("deep-debug recorder and workflow artifacts", async (context) => {
-  await context.test("redacts contact values and omits raw Stagehand prompts", async () => {
+  await context.test("retains supplied contact values but omits model prompts and security secrets", async () => {
     assert.deepEqual(
       resolve_cli_options(["deep-debug", "input.json", "result.txt"]),
       {
@@ -71,6 +74,7 @@ test("deep-debug recorder and workflow artifacts", async (context) => {
       targetUrl: `${origin}/success?email=${encodeURIComponent(CONTACT_VALUES.email)}`,
       engine: "stagehand",
       redactionValues: Object.values(CONTACT_VALUES),
+      contactValues: CONTACT_VALUES,
       environment: { OPENROUTER_MODEL: "test-model" },
     });
     recorder.record({
@@ -78,7 +82,11 @@ test("deep-debug recorder and workflow artifacts", async (context) => {
       substage: "test",
       operation: "secret-redaction",
       outcome: "observed",
-      data: CONTACT_VALUES,
+      data: {
+        ...CONTACT_VALUES,
+        password: "password-secret-value",
+        captchaToken: "captcha-secret-value",
+      },
     });
     recorder.recordAiOperations("population", CONTACT_VALUES.message, [{
       placeholderInstruction: `raw provider prompt ${CONTACT_VALUES.message}`,
@@ -95,10 +103,32 @@ test("deep-debug recorder and workflow artifacts", async (context) => {
     });
 
     const text = await read_text_artifacts(summary.artifactDirectory);
-    assert_no_contact_values(text);
+    assert_contact_values_present(text);
+    assert.doesNotMatch(text, /password-secret-value|captcha-secret-value/);
     assert.doesNotMatch(text, /raw provider prompt/i);
     assert.match(text, /instructionTemplateId/);
-    assert.match(text, /redacted-contact-value/);
+    assert.match(text, /redacted-secret/);
+  });
+
+  await context.test("retains the plain timeline when gzip finalization fails", async () => {
+    const recorder = await create_deep_debug_context({
+      outputPath: join(temporary_directory, "compression-fallback", "result.txt"),
+      targetUrl: "https://compression-fallback.example.test/",
+      engine: "playwright",
+      redactionValues: [],
+    });
+    recorder.record({
+      stage: "orchestrator",
+      substage: "test",
+      operation: "preserve-on-compression-failure",
+      outcome: "observed",
+    });
+    await mkdir(join(recorder.artifactDirectory, "timeline.jsonl.gz"));
+
+    const summary = await recorder.finalize({});
+    assert.equal(summary.timelinePath.endsWith("timeline.jsonl"), true);
+    assert.equal(summary.artifactErrorCount, 1);
+    assert.match(await read_timeline(summary.timelinePath), /preserve-on-compression-failure/);
   });
 
   await context.test("captures successful population, handoff, submit, DOM, and confirmation evidence", async () => {
@@ -108,23 +138,132 @@ test("deep-debug recorder and workflow artifacts", async (context) => {
     assert.equal(outcome.submissionConfirmed, true);
     assert.ok(outcome.deepDebug);
     assert.equal(outcome.deepDebug.artifactErrorCount, 0);
+    const browser_stage = JSON.parse(await readFile(
+      join(outcome.deepDebug.artifactDirectory, "browser", "browser-stage.json"),
+      "utf8",
+    )) as {
+      schemaVersion: number;
+      navigationAttempts: Array<{ candidateKind: string }>;
+      selectedCandidateKind: string;
+      securityEvidence: { formSubmissionAllowed: boolean; cleartext: boolean };
+    };
+    assert.equal(browser_stage.schemaVersion, 3);
+    assert.deepEqual(browser_stage.navigationAttempts.map((attempt) => attempt.candidateKind), ["ORIGINAL"]);
+    assert.equal(browser_stage.selectedCandidateKind, "ORIGINAL");
+    assert.equal(browser_stage.securityEvidence.formSubmissionAllowed, true);
+    assert.equal(browser_stage.securityEvidence.cleartext, true);
 
-    const timeline = await readFile(outcome.deepDebug.timelinePath, "utf8");
+    const timeline = await read_timeline(outcome.deepDebug.timelinePath);
+    assert.equal(outcome.deepDebug.timelinePath.endsWith("timeline.jsonl.gz"), true);
+    const artifact_files = await list_files(outcome.deepDebug.artifactDirectory);
+    assert.equal(artifact_files.some((file) => /[\\/]events\.jsonl$/i.test(file)), false);
+    assert.equal(artifact_files.some((file) => /[\\/]network\.jsonl$/i.test(file)), false);
+    const manifest = JSON.parse(
+      await readFile(outcome.deepDebug.manifestPath, "utf8"),
+    ) as { artifacts: Array<{ path: string }> };
+    assert.equal(
+      manifest.artifacts.some((artifact) => artifact.path === "timeline.jsonl.gz"),
+      true,
+    );
+    assert.equal(
+      manifest.artifacts.some((artifact) => /(?:events|network)\.jsonl$/i.test(artifact.path)),
+      false,
+    );
+    assert.match(
+      await readFile(outcome.deepDebug.summaryPath, "utf8"),
+      /Start with timeline\.jsonl\.gz/,
+    );
     assert.match(timeline, /population-completed/);
     assert.match(timeline, /population-to-submission-handoff/);
     assert.match(timeline, /prepare-submit-control/);
     assert.match(timeline, /activate-submit-control/);
     assert.match(timeline, /dom-event/);
     assert.match(timeline, /submission-assessment-completed/);
+    assert.match(timeline, /"operation":"scan-contact-links","outcome":"started"/);
+    assert.match(timeline, /"operation":"scan-contact-links","outcome":"succeeded"/);
+    assert.match(timeline, /"operation":"scan-frame-links","outcome":"succeeded"/);
     assert_chronological(timeline);
-    assert_no_contact_values(await read_text_artifacts(outcome.deepDebug.artifactDirectory));
+    const artifacts = await read_text_artifacts(outcome.deepDebug.artifactDirectory);
+    assert_contact_values_present(artifacts);
+    assert.doesNotMatch(artifacts, /csrf-secret-value|captcha-secret-value|password-secret-value/);
+    assert.match(timeline, /"contactValuesMasked":false/);
+    const final_snapshot = JSON.parse(await readFile(
+      join(
+        outcome.deepDebug.artifactDirectory,
+        "submission",
+        "snapshots",
+        "20-final-message-integrity-before-submit-click.json",
+      ),
+      "utf8",
+    )) as {
+      snapshot: { controls: Array<{ valueState: {
+        value: string | null;
+        expectedWorkflowField: string | null;
+        expectedValue: string | null;
+        matchesExpected: boolean;
+      } }> };
+    };
+    for (const [field, expected] of Object.entries(CONTACT_VALUES)) {
+      const control = final_snapshot.snapshot.controls.find(
+        (candidate) => candidate.valueState.expectedWorkflowField === field,
+      );
+      assert.ok(control, `missing ${field} control audit`);
+      assert.equal(control.valueState.value, expected);
+      assert.equal(control.valueState.expectedValue, expected);
+      assert.equal(control.valueState.matchesExpected, true);
+    }
+    const integrity = JSON.parse(await readFile(
+      join(outcome.deepDebug.artifactDirectory, "submission", "final-message-integrity.json"),
+      "utf8",
+    )) as { passed: boolean; expectedValue: string; actualValue: string };
+    assert.equal(integrity.passed, true);
+    assert.equal(integrity.expectedValue, CONTACT_VALUES.message);
+    assert.equal(integrity.actualValue, CONTACT_VALUES.message);
+    await assert_image_artifacts(
+      outcome.deepDebug.artifactDirectory,
+      ["final-message-integrity.jpeg"],
+    );
+  });
+
+  await context.test("retains one JPEG for discovery failures", async () => {
+    const discovery = await run_deep_debug("/no-form", "no-form");
+    assert.equal(discovery.status, "FAILED", JSON.stringify(discovery));
+    await assert_image_artifacts(
+      discovery.deepDebug!.artifactDirectory,
+      ["discovery-failure.jpeg"],
+    );
+  });
+
+  await context.test("finalizes focused contact-route timeout evidence", async () => {
+    const recorder = await create_deep_debug_context({
+      outputPath: join(temporary_directory, "route-timeout", "result.txt"),
+      targetUrl: "https://hung.example.test/",
+      engine: "playwright",
+      redactionValues: [],
+    });
+    const frame = {
+      url: () => "https://hung.example.test/frame",
+      locator: () => ({ evaluateAll: () => new Promise<never>(() => undefined) }),
+    };
+    const page = {
+      url: () => "https://hung.example.test/",
+      frames: () => [frame],
+    } as unknown as Page;
+
+    await assert.rejects(discover_contact_routes(page, { timeoutMs: 25, deepDebug: recorder }));
+    const summary = await recorder.finalize({ failure: "Contact-link scanning timed out after 25 ms." });
+    const timeline = await read_timeline(summary.timelinePath);
+    assert.match(timeline, /"operation":"scan-contact-links","outcome":"failed"/);
+    assert.match(timeline, /"frameUrl":"https:\/\/hung\.example\.test\/frame"/);
+    assert.match(timeline, /"timeoutMs":25/);
+    assert.match(timeline, /"completedFrames":0/);
   });
 
   await context.test("captures native validation blockage before submit activation", async () => {
     const outcome = await run_deep_debug("/validation", "validation");
     assert.equal(outcome.failureKind, "submission.validation", JSON.stringify(outcome));
     assert.equal(outcome.submissionAttempted, false);
-    const timeline = await readFile(outcome.deepDebug!.timelinePath, "utf8");
+    const timeline = await read_timeline(outcome.deepDebug!.timelinePath);
     assert.match(timeline, /assess-effective-native-validity/);
     assert.match(timeline, /deterministic-population-recovery/);
     assert.equal(
@@ -159,6 +298,37 @@ test("deep-debug recorder and workflow artifacts", async (context) => {
     assert.match(
       await read_text_artifacts(outcome.deepDebug!.artifactDirectory),
       /"valueMissing": true/,
+    );
+    await assert_image_artifacts(
+      outcome.deepDebug!.artifactDirectory,
+      ["pre-submit.jpeg"],
+    );
+  });
+
+  await context.test("captures exact evidence when final message integrity blocks submission", async () => {
+    const outcome = await run_deep_debug(
+      "/message-mutated-preflight",
+      "message-mutated-preflight",
+    );
+    assert.equal(outcome.status, "FAILED", JSON.stringify(outcome));
+    assert.equal(outcome.failureKind, "submission.message_integrity");
+    assert.equal(outcome.submissionAttempted, false);
+    const evidence = JSON.parse(await readFile(
+      join(outcome.deepDebug!.artifactDirectory, "submission", "final-message-integrity.json"),
+      "utf8",
+    )) as { passed: boolean; expectedValue: string; actualValue: string; reason: string };
+    assert.equal(evidence.passed, false);
+    assert.equal(evidence.expectedValue, CONTACT_VALUES.message);
+    assert.equal(evidence.actualValue, "message changed after population");
+    assert.match(evidence.reason, /changed|truncated/i);
+    const timeline = await read_timeline(outcome.deepDebug!.timelinePath);
+    assert.equal(
+      count_occurrences(timeline, '"operation":"activate-submit-control","outcome":"started"'),
+      0,
+    );
+    await assert_image_artifacts(
+      outcome.deepDebug!.artifactDirectory,
+      ["final-message-integrity.jpeg"],
     );
   });
 
@@ -205,7 +375,7 @@ test("deep-debug recorder and workflow artifacts", async (context) => {
       ),
       true,
     );
-    assert_no_contact_values(
+    assert_contact_values_present(
       await read_text_artifacts(outcome.deepDebug!.artifactDirectory),
     );
   });
@@ -277,31 +447,46 @@ test("deep-debug recorder and workflow artifacts", async (context) => {
     const missing = await run_deep_debug("/remove-submit", "remove-submit");
     assert.equal(missing.failureKind, "submission.no_control", JSON.stringify(missing));
     assert.match(
-      await readFile(missing.deepDebug!.timelinePath, "utf8"),
+      await read_timeline(missing.deepDebug!.timelinePath),
       /no enabled submit control was found/,
+    );
+    await assert_image_artifacts(
+      missing.deepDebug!.artifactDirectory,
+      ["pre-submit.jpeg"],
     );
 
     const obstructed = await run_deep_debug("/overlay", "overlay");
     assert.equal(obstructed.failureKind, "submission.preflight", JSON.stringify(obstructed));
-    const timeline = await readFile(obstructed.deepDebug!.timelinePath, "utf8");
+    const timeline = await read_timeline(obstructed.deepDebug!.timelinePath);
     assert.match(timeline, /preflight-hit-test/);
     assert.match(timeline, /intercepted the submit control/);
+    await assert_image_artifacts(
+      obstructed.deepDebug!.artifactDirectory,
+      ["pre-submit.jpeg"],
+    );
   });
 
   await context.test("captures unconfirmed and passive-CAPTCHA outcomes without a second submit", async () => {
     const unconfirmed = await run_deep_debug("/unconfirmed", "unconfirmed");
     assert.equal(unconfirmed.failureKind, "submission.inconclusive", JSON.stringify(unconfirmed));
-    const unconfirmed_timeline = await readFile(
+    const unconfirmed_timeline = await read_timeline(
       unconfirmed.deepDebug!.timelinePath,
-      "utf8",
     );
     assert.equal(count_occurrences(unconfirmed_timeline, '"operation":"activate-submit-control","outcome":"started"'), 1);
     assert.match(unconfirmed_timeline, /deterministic-evidence/);
+    await assert_image_artifacts(
+      unconfirmed.deepDebug!.artifactDirectory,
+      ["final-message-integrity.jpeg"],
+    );
 
     const captcha = await run_deep_debug("/passive-captcha", "passive-captcha");
     assert.equal(captcha.status, "SUCCESS", JSON.stringify(captcha));
     assert.equal(captcha.submissionConfirmed, true);
     assert.equal(captcha.submissionDebug?.captchaBlocked, false);
+    await assert_image_artifacts(
+      captcha.deepDebug!.artifactDirectory,
+      ["final-message-integrity.jpeg"],
+    );
   });
 
   await context.test("keeps rejection, contradiction, and artifacts in agreement", async () => {
@@ -317,16 +502,29 @@ test("deep-debug recorder and workflow artifacts", async (context) => {
       "/round3-contradictory",
       "round3-contradictory",
     );
-    assert.equal(contradictory.status, "INCONCLUSIVE", JSON.stringify(contradictory));
+    assert.equal(contradictory.status, "FAILED", JSON.stringify(contradictory));
     assert.equal(
       contradictory.failureKind,
-      "submission.inconclusive",
+      "submission.contradictory",
     );
     assert.equal(
       contradictory.submissionDebug?.postClickDisposition,
       "contradictory",
     );
     assert.equal(contradictory.submissionDebug?.confirmationEvidence, "network");
+    assert.equal(contradictory.signalEvaluation?.evaluated, true);
+    if (contradictory.signalEvaluation?.evaluated) {
+      assert.equal(contradictory.signalEvaluation.hasPositiveSignals, true);
+      assert.equal(contradictory.signalEvaluation.hasNegativeSignals, true);
+    }
+    await assert_image_artifacts(
+      rejected.deepDebug!.artifactDirectory,
+      ["final-message-integrity.jpeg"],
+    );
+    await assert_image_artifacts(
+      contradictory.deepDebug!.artifactDirectory,
+      ["final-message-integrity.jpeg"],
+    );
 
     for (const outcome of [rejected, contradictory]) {
       const artifacts = await read_text_artifacts(
@@ -340,10 +538,10 @@ test("deep-debug recorder and workflow artifacts", async (context) => {
         artifacts,
         new RegExp(`"failureKind": "${outcome.failureKind!.replace(".", "\\.")}"`),
       );
-      assert_no_contact_values(artifacts);
+      assert_contact_values_present(artifacts);
       assert.equal(
         count_occurrences(
-          await readFile(outcome.deepDebug!.timelinePath, "utf8"),
+          await read_timeline(outcome.deepDebug!.timelinePath),
           '"operation":"activate-submit-control","outcome":"started"',
         ),
         1,
@@ -352,14 +550,14 @@ test("deep-debug recorder and workflow artifacts", async (context) => {
   });
 });
 
-test("keeps Hebrew success evidence bounded and redacted", async () => {
+test("keeps Hebrew success evidence bounded with auditable supplied values", async () => {
   const outcome = await run_deep_debug("/hebrew-success", "hebrew-success");
   assert.equal(outcome.status, "SUCCESS", JSON.stringify(outcome));
   assert.equal(outcome.submissionConfirmed, true);
   assert.equal(outcome.deepDebug?.artifactErrorCount, 0);
   const artifacts = await read_text_artifacts(outcome.deepDebug!.artifactDirectory);
   assert.match(artifacts, /פנייתך התקבלה/u);
-  assert_no_contact_values(artifacts);
+  assert_contact_values_present(artifacts);
 });
 
 async function run_deep_debug(path: string, name: string) {
@@ -389,6 +587,9 @@ async function run_deep_debug(path: string, name: string) {
 }
 
 function page_for_path(path: string): string {
+  if (path === "/no-form") {
+    return "<!doctype html><html><body><main><h1>Company information</h1><p>No contact form is available.</p></main></body></html>";
+  }
   if (path === "/hebrew-success") {
     return `<!doctype html><html dir="rtl"><body><main><h1>צור קשר</h1>
       <form id="contact">
@@ -412,6 +613,11 @@ function page_for_path(path: string): string {
   const captcha = path === "/passive-captcha"
     ? '<div class="g-recaptcha" data-sitekey="test"></div>'
     : "";
+  const security_fields = path === "/success"
+    ? `<input type="hidden" name="csrf_token" value="csrf-secret-value">
+       <input type="hidden" name="captcha_token" value="captcha-secret-value">
+       <input type="password" name="password" value="password-secret-value">`
+    : "";
   const submit_behavior =
     path === "/success" || path === "/passive-captcha"
       ? "status.textContent = 'Thank you. Your message has been sent successfully.';"
@@ -432,7 +638,7 @@ function page_for_path(path: string): string {
                  method: 'POST',
                  body: new FormData(form),
                }).then(() => {
-                 status.textContent = 'Please complete this required field.';
+                 status.textContent = 'שליחת ההודעה נכשלה.';
                });`
         : path === "/reset-without-evidence"
           ? "form.reset();"
@@ -448,6 +654,19 @@ function page_for_path(path: string): string {
              document.body.appendChild(overlay);
            }`
         : "";
+  const message_integrity_mutation = path === "/message-mutated-preflight"
+    ? `const submit = form.querySelector('button');
+       const originalRect = submit.getBoundingClientRect.bind(submit);
+       let populatedGeometryChecks = 0;
+       submit.getBoundingClientRect = () => {
+         const message = form.elements.message;
+         if (message.value) {
+           populatedGeometryChecks += 1;
+           if (populatedGeometryChecks >= 2) message.value = 'message changed after population';
+         }
+         return originalRect();
+       };`
+    : "";
   return `<!doctype html>
     <html><body><main><h1>Contact our team</h1>
       <form id="contact" action="/contact" method="post">
@@ -455,12 +674,14 @@ function page_for_path(path: string): string {
         <label>Email <input name="email" type="email" required></label>
         <label>Phone <input name="phone" type="tel"></label>
         <label>Message <textarea name="message" required></textarea></label>
+        ${security_fields}
         ${hidden_required}${captcha}
         <button type="submit">Send message</button>
       </form><div id="status" role="status"></div></main>
       <script>
         const form = document.querySelector('#contact');
         const status = document.querySelector('#status');
+        ${message_integrity_mutation}
         form.addEventListener('input', () => { ${input_behavior} }, { once: true });
         form.addEventListener('submit', event => {
           event.preventDefault();
@@ -472,8 +693,15 @@ function page_for_path(path: string): string {
 
 async function read_text_artifacts(directory: string): Promise<string> {
   const files = await list_files(directory);
-  const text_files = files.filter((file) => /\.(?:json|jsonl|txt)$/i.test(file));
-  return (await Promise.all(text_files.map((file) => readFile(file, "utf8")))).join("\n");
+  const text_files = files.filter((file) => /\.(?:json|jsonl|txt)$/i.test(file) || /\.jsonl\.gz$/i.test(file));
+  return (await Promise.all(text_files.map((file) =>
+    /\.gz$/i.test(file) ? read_timeline(file) : readFile(file, "utf8")
+  ))).join("\n");
+}
+
+async function read_timeline(file: string): Promise<string> {
+  const content = await readFile(file);
+  return file.endsWith(".gz") ? gunzipSync(content).toString("utf8") : content.toString("utf8");
 }
 
 async function list_files(directory: string): Promise<string[]> {
@@ -487,9 +715,36 @@ async function list_files(directory: string): Promise<string[]> {
   return files;
 }
 
-function assert_no_contact_values(value: string): void {
+async function assert_image_artifacts(
+  directory: string,
+  expected_names: string[],
+): Promise<void> {
+  const files = await list_files(directory);
+  const images = files.filter((file) => /\.(?:jpeg|png)$/i.test(file));
+  assert.deepEqual(
+    images.map((file) => file.replaceAll("\\", "/").split("/").at(-1)).sort(),
+    [...expected_names].sort(),
+  );
+  assert.equal(images.some((file) => /\.png$/i.test(file)), false);
+
+  const timeline_file = files.find((file) => /[\\/]timeline\.jsonl(?:\.gz)?$/i.test(file));
+  assert.ok(timeline_file);
+  const timeline = await read_timeline(timeline_file);
+  const recorded_paths = timeline.trim().split(/\r?\n/).map(
+    (line) => JSON.parse(line) as { data?: { path?: string } },
+  ).map((event) => event.data?.path).filter(
+    (path): path is string => typeof path === "string",
+  );
+  for (const image of images) {
+    const bytes = await readFile(image);
+    assert.deepEqual([...bytes.subarray(0, 3)], [0xff, 0xd8, 0xff]);
+    assert.equal(recorded_paths.includes(image), true);
+  }
+}
+
+function assert_contact_values_present(value: string): void {
   for (const secret of Object.values(CONTACT_VALUES)) {
-    assert.equal(value.includes(secret), false, `artifact leaked contact value: ${secret}`);
+    assert.equal(value.includes(secret), true, `artifact omitted contact value: ${secret}`);
   }
 }
 

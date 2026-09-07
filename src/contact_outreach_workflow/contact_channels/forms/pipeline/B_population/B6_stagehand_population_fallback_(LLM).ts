@@ -24,10 +24,7 @@ import type {
   PageIntelligenceVariableName,
   PageIntelligenceVariables,
 } from "../../../../shared_files_orchestrator/page_intelligence_(Integration).js";
-import {
-  create_page_intelligence_scope,
-  with_masked_page_values,
-} from "../../../../shared_files_orchestrator/page_value_redaction_(Integration).js";
+import { create_page_intelligence_scope } from "../../../../shared_files_orchestrator/page_value_redaction_(Integration).js";
 
 type ContactPopulationField = Extract<
   PopulatedField,
@@ -153,7 +150,7 @@ async function run_stagehand_population_fallback(
     let observation: PageIntelligenceObserveResult;
     const observation_started_at = Date.now();
     try {
-      observation = await observe_with_masked_contact_values(
+      observation = await observe_contact_form_without_dom_mutation(
         page_intelligence,
         candidate,
         contact_request,
@@ -744,7 +741,7 @@ async function selected_form_is_browser_valid(form: Locator): Promise<boolean> {
     .catch(() => false);
 }
 
-async function observe_with_masked_contact_values(
+async function observe_contact_form_without_dom_mutation(
   page_intelligence: PageIntelligence,
   candidate: ContactFormCandidate,
   contact_request: ContactRequest,
@@ -752,20 +749,15 @@ async function observe_with_masked_contact_values(
   instruction: string,
   scope_selector: string,
 ): Promise<PageIntelligenceObserveResult> {
-  return with_masked_page_values(
-    candidate.frame.page(),
-    contact_values(contact_request),
-    () =>
-      page_intelligence.observe({
-        stage: "population",
-        page: candidate.frame.page(),
-        instruction,
-        variables,
-        selector: scope_selector,
-        ignoreSelectors: [CAPTCHA_SELECTOR],
-        timeoutMs: AI_OBSERVE_TIMEOUT_MS,
-      }),
-  );
+  return page_intelligence.observe({
+    stage: "population",
+    page: candidate.frame.page(),
+    instruction,
+    variables,
+    selector: scope_selector,
+    ignoreSelectors: [CAPTCHA_SELECTOR],
+    timeoutMs: AI_OBSERVE_TIMEOUT_MS,
+  });
 }
 
 function blocking_reason_fields(

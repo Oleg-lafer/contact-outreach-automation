@@ -130,6 +130,20 @@ The explicit `--confirmed` flag authorizes live submissions for a non-interactiv
 run. Prefer `operations/scheduled-run.ps1`, which supplies it only when the
 scheduled configuration has `confirmLiveSubmission` set to `true`.
 
+## Optional browser endpoint recovery
+
+Browser recovery is disabled by default. A canary run can enable bounded same-domain
+HTTPS recovery with:
+
+```powershell
+$env:CONTACT_FORM_BROWSER_RECOVERY = "on"
+```
+
+Use `off` to disable it again. Recovery keeps one Chromium context, makes at most
+three navigation attempts within 40 seconds, and never treats CAPTCHA solving,
+stealth, cleartext HTTP, or invalid TLS as a recovery strategy. Canonical URLs are
+runtime diagnostics only and do not update stored website URLs.
+
 ## Optional AI fallback
 
 Deterministic Playwright logic is the default. Bounded Stagehand fallbacks can be enabled with:

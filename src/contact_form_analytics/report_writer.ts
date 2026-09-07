@@ -5,6 +5,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import type {
   AnalyticsError,
   AnalyticsResult,
+  BrowserStageArtifactEvidence,
   DiscoveryChannelAnalyticsResult,
   DiscoveryNormalizedOutcome,
   FormSignalStatistic,
@@ -322,11 +323,39 @@ const siteCsv = (sites: SiteClassification[]): string =>
     ]),
   );
 
+const LEGACY_RETRYABLE_BROWSER_SUBCATEGORIES = new Set([
+  "dns_resolution_failure",
+  "tls_or_certificate_failure",
+  "connection_refused",
+  "connection_reset",
+  "navigation_timeout_before_main_document",
+  "navigation_timeout_policy_ended_progressing_load",
+  "unknown_browser_failure",
+]);
+
+const normalizedBrowserCategory = (
+  browserStage: BrowserStageArtifactEvidence | undefined,
+): BrowserStageArtifactEvidence["category"] => {
+  const recorded = browserStage?.category ?? "";
+  if (!browserStage || browserStage.schemaVersion >= 3) return recorded;
+  const status = browserStage.mainDocumentStatus;
+  if (status === 401 || status === 403 || status === 429) return "ACCESS_RESTRICTION";
+  if (status !== null && status >= 400) return "DESTINATION_WEBSITE";
+  return recorded;
+};
+
+const legacyStatusSubcategory = (status: number | null): string => {
+  if (status === null) return "legacy_status_failure";
+  if (status >= 500) return "http_5xx";
+  return `http_${status}`;
+};
+
 const browserStageFiles = (sites: SiteClassification[]): OutputFiles => {
   const categories = [
-    "OUR_SYSTEM_FAILURE",
-    "DESTINATION_FAILURE",
+    "OUR_AUTOMATION",
+    "DESTINATION_WEBSITE",
     "ACCESS_RESTRICTION",
+    "NETWORK_INFRASTRUCTURE",
     "UNDETERMINED",
   ] as const;
   const rows = sites.map((site) => {
@@ -336,14 +365,18 @@ const browserStageFiles = (sites: SiteClassification[]): OutputFiles => {
       site.stageStates.browser,
     );
     const outcome = explicit?.outcome || (inferredFailure ? "FAILED" : inferredEntered ? "LOADED" : "NOT_ENTERED");
-    const category = explicit?.category || (
+    const normalizedExplicitCategory = normalizedBrowserCategory(explicit);
+    const legacyStatusReclassified = Boolean(
+      explicit && explicit.schemaVersion < 3 && normalizedExplicitCategory !== explicit.category,
+    );
+    const category = normalizedExplicitCategory || (
       inferredFailure
         ? site.attribution === "workflow_attributable"
-          ? "OUR_SYSTEM_FAILURE"
+          ? "OUR_AUTOMATION"
           : site.attribution === "non_workflow_attributable"
             ? /access|antibot|captcha|http_40[13]|http_429/.test(site.subcategory)
               ? "ACCESS_RESTRICTION"
-              : "DESTINATION_FAILURE"
+              : "DESTINATION_WEBSITE"
             : "UNDETERMINED"
         : ""
     );
@@ -353,13 +386,21 @@ const browserStageFiles = (sites: SiteClassification[]): OutputFiles => {
       entered: explicit?.entered ?? inferredEntered,
       outcome,
       category,
-      responsibleParty: explicit?.responsibleParty || (
-        category === "OUR_SYSTEM_FAILURE" ? "OUR_SYSTEM" :
-        category === "DESTINATION_FAILURE" ? "DESTINATION" : "UNKNOWN"
+      responsibleParty: explicit && normalizedExplicitCategory === explicit.category
+        ? explicit.responsibleParty
+        : (
+        category === "OUR_AUTOMATION" ? "OUR_AUTOMATION" :
+        category === "DESTINATION_WEBSITE" ? "DESTINATION_WEBSITE" :
+        category === "ACCESS_RESTRICTION" ? "ACCESS_RESTRICTION" :
+        category === "NETWORK_INFRASTRUCTURE" ? "NETWORK_INFRASTRUCTURE" : "UNKNOWN"
       ),
-      subcategory: explicit?.subcategory || site.subcategory,
-      confidence: explicit?.confidence || (inferredFailure ? "LOW" : ""),
-      ruleId: explicit?.ruleId || site.ruleId,
+      subcategory: legacyStatusReclassified
+        ? legacyStatusSubcategory(explicit?.mainDocumentStatus ?? null)
+        : explicit?.subcategory || site.subcategory,
+      confidence: legacyStatusReclassified ? "HIGH" : explicit?.confidence || (inferredFailure ? "LOW" : ""),
+      ruleId: legacyStatusReclassified
+        ? "ANALYTICS-LEGACY-STATUS-PRECEDENCE"
+        : explicit?.ruleId || site.ruleId,
       phase: explicit?.phase || (inferredFailure ? "INITIAL_NAVIGATION" : ""),
       operation: explicit?.operation || "",
       durationMs: explicit?.durationMs,
@@ -369,8 +410,35 @@ const browserStageFiles = (sites: SiteClassification[]): OutputFiles => {
       reason: explicit?.reason || site.primaryCause,
       artifactPath: explicit?.artifactPath || "",
       evidenceSource: explicit?.source || site.evidenceBasis,
+      classificationBasis: explicit?.classificationBasis || (inferredFailure ? "INFERRED" : ""),
+      strongestSupportingEvidence: explicit?.strongestSupportingEvidence || site.evidenceSummary,
+      strongestEvidenceAgainst: explicit?.strongestEvidenceAgainst || "",
+      missingEvidence: explicit?.missingEvidence ?? [],
+      timeoutSource: explicit?.timeoutSource || "",
+      lastProgressAt: explicit?.lastProgressAt || "",
+      lastProgressType: explicit?.lastProgressType || "",
+      attemptCount: explicit?.attemptCount ?? 0,
+      selectedCandidateKind: explicit?.selectedCandidateKind || "",
+      pageQuality: explicit?.pageQuality || "",
+      recoveryEligible: explicit?.schemaVersion === 3
+        ? explicit.recoveryEligible
+        : LEGACY_RETRYABLE_BROWSER_SUBCATEGORIES.has(explicit?.subcategory || site.subcategory),
+      recovered: explicit?.recovered ?? false,
     };
   });
+  const usableRows = rows.filter((row) =>
+    ["LOADED", "LOADED_AFTER_TIMEOUT"].includes(row.outcome) &&
+    row.mainDocumentStatus !== null && row.mainDocumentStatus !== undefined &&
+    row.mainDocumentStatus >= 200 && row.mainDocumentStatus < 300 &&
+    row.meaningfulContent === true &&
+    (!row.pageQuality || row.pageQuality === "USABLE")
+  );
+  const transportLoadedRows = rows.filter((row) => row.mainDocumentReceived === true);
+  const falseLoadedRows = rows.filter((row) =>
+    ["LOADED", "LOADED_AFTER_TIMEOUT"].includes(row.outcome) && !usableRows.includes(row)
+  );
+  const recoveryEligibleRows = rows.filter((row) => row.recoveryEligible);
+  const recoveredUsableRows = usableRows.filter((row) => row.recovered);
   const ledger = rows.filter((row) => row.outcome === "FAILED");
   const entered = rows.filter((row) => row.entered).length;
   const loaded = rows.filter((row) => row.outcome === "LOADED").length;
@@ -398,8 +466,15 @@ const browserStageFiles = (sites: SiteClassification[]): OutputFiles => {
         ledger.filter((row) => (row.subcategory || "unknown_browser_failure") === subcategory).length,
       ]),
   );
+  const ourAutomationSubcategoryCounts = Object.fromEntries(
+    [...new Set(ledger.filter((row) => row.category === "OUR_AUTOMATION").map((row) => row.subcategory || "unknown_automation_failure"))]
+      .sort()
+      .map((subcategory) => [subcategory, ledger.filter((row) =>
+        row.category === "OUR_AUTOMATION" && (row.subcategory || "unknown_automation_failure") === subcategory
+      ).length]),
+  );
   const summary = {
-    schemaVersion: 1,
+    schemaVersion: 3,
     totalWebsites: sites.length,
     entered,
     loaded,
@@ -410,6 +485,24 @@ const browserStageFiles = (sites: SiteClassification[]): OutputFiles => {
     categoryPercentagesOfFailures,
     categoryPercentagesOfEntrants,
     subcategoryCounts,
+    ourAutomationSubcategoryCounts,
+    kpis: {
+      usablePages: usableRows.length,
+      usableBrowserStageSuccessRate: rows.length === 0
+        ? 0
+        : Number(((usableRows.length / rows.length) * 100).toFixed(2)),
+      transportLoaded: transportLoadedRows.length,
+      transportLoadRate: rows.length === 0
+        ? 0
+        : Number(((transportLoadedRows.length / rows.length) * 100).toFixed(2)),
+      recoveryEligible: recoveryEligibleRows.length,
+      recoveredUsable: recoveredUsableRows.length,
+      recoveryYield: recoveryEligibleRows.length === 0
+        ? 0
+        : Number(((recoveredUsableRows.length / recoveryEligibleRows.length) * 100).toFixed(2)),
+      falseLoaded: falseLoadedRows.length,
+      preBrowser: rows.filter((row) => !row.entered).length,
+    },
     ledger,
     preBrowserExclusions: rows
       .filter((row) => !row.entered)
@@ -432,6 +525,15 @@ const browserStageFiles = (sites: SiteClassification[]): OutputFiles => {
     `Browser-stage failures: ${summary.failures}`,
     `Did not enter browser stage: ${summary.notEntered}`,
     "",
+    "BROWSER-STAGE KPIS",
+    `Usable pages: ${summary.kpis.usablePages}`,
+    `Usable browser-stage success rate: ${summary.kpis.usableBrowserStageSuccessRate.toFixed(2)}%`,
+    `Transport loaded: ${summary.kpis.transportLoaded} (${summary.kpis.transportLoadRate.toFixed(2)}%)`,
+    `Recovery eligible: ${summary.kpis.recoveryEligible}`,
+    `Recovered usable: ${summary.kpis.recoveredUsable} (${summary.kpis.recoveryYield.toFixed(2)}% yield)`,
+    `False loaded: ${summary.kpis.falseLoaded}`,
+    `Pre-browser: ${summary.kpis.preBrowser}`,
+    "",
     "FAILURE CATEGORIES",
     ...categories.map((category) =>
       `${category}: ${categoryCounts[category]} (${categoryPercentagesOfFailures[category].toFixed(2)}% of browser failures; ${categoryPercentagesOfEntrants[category].toFixed(2)}% of entrants)`
@@ -441,6 +543,11 @@ const browserStageFiles = (sites: SiteClassification[]): OutputFiles => {
     ...(Object.keys(subcategoryCounts).length === 0
       ? ["none"]
       : Object.entries(subcategoryCounts).map(([subcategory, count]) => `${subcategory}: ${count}`)),
+    "",
+    "OUR AUTOMATION BREAKDOWN",
+    ...(Object.keys(ourAutomationSubcategoryCounts).length === 0
+      ? ["none"]
+      : Object.entries(ourAutomationSubcategoryCounts).map(([subcategory, count]) => `${subcategory}: ${count}`)),
     "",
     "RECONCILIATION",
     `Entrants equal loaded plus failures: ${summary.reconciliation.entrantsEqualLoadedPlusFailures ? "yes" : "NO"}`,
@@ -453,20 +560,34 @@ const browserStageFiles = (sites: SiteClassification[]): OutputFiles => {
     [
       "site_id", "website_url", "category", "responsible_party", "subcategory", "confidence", "rule_id",
       "phase", "operation", "duration_ms", "main_document_received", "main_document_status",
-      "meaningful_content", "reason", "artifact_path", "evidence_source",
+      "meaningful_content", "reason", "artifact_path", "evidence_source", "classification_basis",
+      "strongest_supporting_evidence", "strongest_evidence_against", "missing_evidence", "timeout_source",
+      "last_progress_at", "last_progress_type", "attempt_count", "selected_candidate_kind", "page_quality",
+      "recovery_eligible", "recovered",
     ],
     ledger.map((row) => [
       row.siteId, row.websiteUrl, row.category, row.responsibleParty, row.subcategory, row.confidence, row.ruleId,
       row.phase, row.operation, row.durationMs ?? "", row.mainDocumentReceived ?? "",
       row.mainDocumentStatus ?? "", row.meaningfulContent ?? "", row.reason, row.artifactPath,
       row.evidenceSource,
+      row.classificationBasis, row.strongestSupportingEvidence, row.strongestEvidenceAgainst,
+      row.missingEvidence.join(" | "), row.timeoutSource, row.lastProgressAt, row.lastProgressType,
+      row.attemptCount, row.selectedCandidateKind, row.pageQuality, row.recoveryEligible, row.recovered,
     ]),
   );
-  return {
+  const files: OutputFiles = {
     "browser-stage-summary.json": `${JSON.stringify(summary, null, 2)}\n`,
     "browser-stage-summary.txt": `${text}\r\n`,
     "browser-stage-failures.csv": failureCsv,
   };
+  for (const category of categories) {
+    const categoryRows = ledger.filter((row) => row.category === category);
+    files[`browser-stage-${category.toLowerCase().replaceAll("_", "-")}.csv`] = csv(
+      ["site_id", "website_url", "subcategory", "confidence", "rule_id", "reason", "classification_basis", "strongest_supporting_evidence", "strongest_evidence_against", "missing_evidence", "artifact_path"],
+      categoryRows.map((row) => [row.siteId, row.websiteUrl, row.subcategory, row.confidence, row.ruleId, row.reason, row.classificationBasis, row.strongestSupportingEvidence, row.strongestEvidenceAgainst, row.missingEvidence.join(" | "), row.artifactPath]),
+    );
+  }
+  return files;
 };
 
 const errorsCsv = (errors: AnalyticsError[]): string =>

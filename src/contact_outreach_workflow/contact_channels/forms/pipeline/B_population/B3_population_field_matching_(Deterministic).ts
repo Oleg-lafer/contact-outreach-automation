@@ -9,7 +9,7 @@ import type { DeepDebugContext } from "../../shared_files_forms/deep_debug_types
 import { matches_form_semantic } from "../../shared_files_forms/form_semantics_(Deterministic).js";
 
 export const FILLABLE_CONTACT_CONTROL_SELECTOR =
-  'input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="reset"]):not([type="checkbox"]):not([type="radio"]), textarea, select';
+  'input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="reset"]):not([type="checkbox"]):not([type="radio"]), textarea, select, [contenteditable="true"]';
 
 export interface MatchedContactField {
   value: string;
@@ -52,16 +52,37 @@ export async function describe_field(control: Locator): Promise<FieldDescription
     const labels = Array.from(field.labels ?? []).map(
       (label) => label.textContent ?? "",
     );
+    const referenced_text = [
+      field.getAttribute("aria-describedby") ?? "",
+      field.getAttribute("aria-labelledby") ?? "",
+    ].join(" ")
+      .split(/\s+/)
+      .filter(Boolean)
+      .map((id) => element.ownerDocument.getElementById(id)?.textContent ?? "");
+    const nearby_text = [
+      field.closest("label")?.textContent,
+      field.parentElement?.previousElementSibling?.textContent,
+      field.previousElementSibling?.textContent,
+      field.nextElementSibling?.textContent,
+    ];
     return {
       tag: field.tagName.toLowerCase(),
-      type: field.getAttribute("type")?.toLowerCase() ?? "",
+      type: field.getAttribute("contenteditable") === "true"
+        ? "contenteditable"
+        : field.getAttribute("type")?.toLowerCase() ?? "",
       metadata: [
         field.getAttribute("name"),
         field.id,
         field.getAttribute("placeholder"),
         field.getAttribute("aria-label"),
+        field.getAttribute("title"),
+        field.getAttribute("data-label"),
         field.getAttribute("autocomplete"),
+        field.getAttribute("inputmode"),
+        field.getAttribute("data-testid"),
         ...labels,
+        ...referenced_text,
+        ...nearby_text,
       ]
         .filter(Boolean)
         .join(" ")
@@ -96,17 +117,31 @@ export async function describe_form_like_field(
       field.previousElementSibling?.textContent,
       field.nextElementSibling?.textContent,
     ];
+    const referenced_text = [
+      field.getAttribute("aria-describedby") ?? "",
+      field.getAttribute("aria-labelledby") ?? "",
+    ].join(" ")
+      .split(/\s+/)
+      .filter(Boolean)
+      .map((id) => element.ownerDocument.getElementById(id)?.textContent ?? "");
 
     return {
       tag: field.tagName.toLowerCase(),
-      type: field.getAttribute("type")?.toLowerCase() ?? "",
+      type: field.getAttribute("contenteditable") === "true"
+        ? "contenteditable"
+        : field.getAttribute("type")?.toLowerCase() ?? "",
       metadata: [
         field.getAttribute("name"),
         field.id,
         field.getAttribute("placeholder"),
         field.getAttribute("aria-label"),
+        field.getAttribute("title"),
+        field.getAttribute("data-label"),
         field.getAttribute("autocomplete"),
+        field.getAttribute("inputmode"),
+        field.getAttribute("data-testid"),
         ...labels,
+        ...referenced_text,
         ...nearby_text,
       ]
         .filter(Boolean)
@@ -205,7 +240,7 @@ export function match_contact_field(
   }
 
   if (
-    (field.tag === "textarea" ||
+    (field.tag === "textarea" || field.type === "contenteditable" ||
       matches_form_semantic("message", metadata)) &&
     !filled_kinds.has("message")
   ) {
@@ -306,6 +341,30 @@ export async function fill_matched_control(
       await control.fill(field_match.value);
     }
 
+    const actual_value = await read_contact_control_value(control);
+    const value_matches = contact_field_value_matches(
+      field_match.reportedField,
+      actual_value,
+      field_match.value,
+    );
+    if (!value_matches) {
+      deep_debug?.record({
+        stage: "population",
+        substage: "field-fill",
+        operation: "fill-matched-control",
+        outcome: "failed",
+        correlationId: `field-${index}-${field_match.uniqueKind}`,
+        durationMs: performance.now() - started_at,
+        reason: "the live control value did not retain the complete supplied value",
+        data: {
+          index,
+          matchedField: field_match.reportedField,
+          intendedValueLength: field_match.value.length,
+          actualValueLength: actual_value.length,
+        },
+      });
+      return false;
+    }
     filled_kinds.add(field_match.uniqueKind);
     populated_fields.add(field_match.reportedField);
     const after = await read_control_debug_state(control);
@@ -322,8 +381,7 @@ export async function fill_matched_control(
         uniqueKind: field_match.uniqueKind,
         before,
         after,
-        valueMatchesExpected: after.valueLength === field_match.value.length &&
-          (await control.inputValue().catch(() => "")) === field_match.value,
+        valueMatchesExpected: value_matches,
       },
     });
     return true;
@@ -347,6 +405,38 @@ export async function fill_matched_control(
     });
     return false;
   }
+}
+
+export async function read_contact_control_value(control: Locator): Promise<string> {
+  return control.evaluate((element) => {
+    if (element instanceof HTMLInputElement ||
+        element instanceof HTMLTextAreaElement ||
+        element instanceof HTMLSelectElement) {
+      return element.value;
+    }
+    return element.getAttribute("contenteditable") === "true"
+      ? element.textContent ?? ""
+      : "";
+  }).catch(() => "");
+}
+
+export function contact_field_value_matches(
+  field: PopulatedField,
+  actual: string,
+  expected: string,
+): boolean {
+  if (field === "message") {
+    const normalize_lines = (value: string) => value.replace(/\r\n?/g, "\n");
+    return normalize_lines(actual) === normalize_lines(expected);
+  }
+  if (field === "email") {
+    return actual.trim().toLocaleLowerCase() === expected.trim().toLocaleLowerCase();
+  }
+  if (field === "phone") {
+    const digits = (value: string) => value.replace(/\D/g, "");
+    return digits(actual).length > 0 && digits(actual) === digits(expected);
+  }
+  return actual === expected;
 }
 
 async function read_control_debug_state(control: Locator): Promise<{

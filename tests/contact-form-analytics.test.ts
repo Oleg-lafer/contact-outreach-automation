@@ -3,6 +3,7 @@ import { mkdtemp, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { gzipSync } from "node:zlib";
 import { analyzeRun } from "../src/contact_form_analytics/contact_form_run_analyzer.js";
 import {
   buildSignalDashboardData,
@@ -156,17 +157,31 @@ const writeConfirmationEvents = async (
   debugDirectory: string,
   event: Record<string, unknown>,
   malformedLine = false,
+  format: "legacy" | "gzip" = "legacy",
 ): Promise<void> => {
-  await mkdir(path.join(debugDirectory, "confirmation"), { recursive: true });
+  await mkdir(
+    format === "legacy" ? path.join(debugDirectory, "confirmation") : debugDirectory,
+    { recursive: true },
+  );
   await writeFile(path.join(debugDirectory, "submission-debug.json"), "{}");
-  await writeFile(
-    path.join(debugDirectory, "confirmation", "events.jsonl"),
-    `${JSON.stringify({
+  const confirmationLine = JSON.stringify({
       stage: "confirmation",
       operation: "wait-for-submission-confirmation",
       data: event,
-    })}\n${malformedLine ? "{bad-json\n" : ""}`,
-  );
+    });
+  if (format === "gzip") {
+    const timeline = [
+      JSON.stringify({ stage: "runtime", operation: "unrelated-runtime-event" }),
+      confirmationLine,
+      ...(malformedLine ? ["{bad-json"] : []),
+    ].join("\n") + "\n";
+    await writeFile(path.join(debugDirectory, "timeline.jsonl.gz"), gzipSync(timeline));
+  } else {
+    await writeFile(
+      path.join(debugDirectory, "confirmation", "events.jsonl"),
+      `${confirmationLine}\n${malformedLine ? "{bad-json\n" : ""}`,
+    );
+  }
 };
 
 test("deep-debug report is accepted as a full primary artifact", async () => {
@@ -371,7 +386,7 @@ test("submission signal analytics are multi-label, strict about negatives, and d
       { text: "  Thank you!   Your message was received.  " },
       { text: "Thank you! Your message was received." },
     ],
-  });
+  }, false, "gzip");
 
   const contradictoryDirectory = path.join(runPath, "002", "deep-debug", "contradictory");
   await writeSignalFull(runPath, 2, {
@@ -804,6 +819,48 @@ test("all current failure kinds have deterministic terminal mappings", async () 
     },
     {
       status: "FAILED",
+      failureKind: "population.message_not_found",
+      reason: "The message field could not be found",
+      attribution: "workflow_attributable",
+      stage: "population",
+    },
+    {
+      status: "FAILED",
+      failureKind: "population.message_fill_failed",
+      reason: "The message field did not retain the complete supplied message",
+      attribution: "workflow_attributable",
+      stage: "population",
+    },
+    {
+      status: "FAILED",
+      failureKind: "population.contact_method_missing",
+      reason: "Neither an email field nor a phone field was found and filled",
+      attribution: "workflow_attributable",
+      stage: "population",
+    },
+    {
+      status: "FAILED",
+      failureKind: "submission.message_lost",
+      reason: "The verified message was lost before submission",
+      attribution: "workflow_attributable",
+      stage: "submission",
+    },
+    {
+      status: "FAILED",
+      failureKind: "submission.message_integrity",
+      reason: "The exact message failed final integrity verification",
+      attribution: "workflow_attributable",
+      stage: "submission",
+    },
+    {
+      status: "FAILED",
+      failureKind: "submission.contact_method_lost",
+      reason: "The only verified contact method was lost before submission",
+      attribution: "workflow_attributable",
+      stage: "submission",
+    },
+    {
+      status: "FAILED",
       failureKind: "submission.no_control",
       reason: "No safe submit control was found",
       attempted: true,
@@ -950,7 +1007,16 @@ test("analysis writes latest and collision-safe history outputs and ignores stal
   ]);
   assert.deepEqual(
     (await readdir(path.join(first.latestDirectory!, "stages", "browser"))).sort(),
-    ["browser-stage-failures.csv", "browser-stage-summary.json", "browser-stage-summary.txt"],
+    [
+      "browser-stage-access-restriction.csv",
+      "browser-stage-destination-website.csv",
+      "browser-stage-failures.csv",
+      "browser-stage-network-infrastructure.csv",
+      "browser-stage-our-automation.csv",
+      "browser-stage-summary.json",
+      "browser-stage-summary.txt",
+      "browser-stage-undetermined.csv",
+    ],
   );
   const formsDirectory = path.join(first.latestDirectory!, "channels", "forms");
   assert.deepEqual((await readdir(formsDirectory)).sort(), [

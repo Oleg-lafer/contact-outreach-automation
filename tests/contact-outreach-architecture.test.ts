@@ -100,6 +100,14 @@ test("aggregate outreach outcome requires independent channel outcomes and mirro
     emailDiscoveryResult: null,
     meetingDiscoveryResult: null,
   });
+  const timedOut = create_contact_outreach_outcome(forms, emails, meetings, "TIMED_OUT");
+  assert.deepEqual(outreach_attempt_completion_from_outcome(timedOut), {
+    executionStatus: "timed_out",
+    formsResult: null,
+    emailDiscoveryResult: null,
+    meetingDiscoveryResult: null,
+  });
+  assert.match(format_contact_outreach_outcome(timedOut), /Execution status: TIMED_OUT/);
 });
 
 test("npm workflow commands target only the outreach entry point", async () => {
@@ -113,6 +121,15 @@ test("npm workflow commands target only the outreach entry point", async () => {
     );
   }
   assert.equal(packageJson.scripts.discovery, undefined);
+});
+
+test("scheduled monitoring validates process identity with start timestamps", async () => {
+  const runner = await readFile("operations/scheduled-run.ps1", "utf8");
+  const monitor = await readFile("operations/monitor-scheduled-run.ps1", "utf8");
+  assert.match(runner, /powershellStartedAtUtc/);
+  assert.match(runner, /launcherStartedAtUtc/);
+  assert.match(monitor, /Test-ProcessIdentity/);
+  assert.match(monitor, /StartTime\.ToUniversalTime/);
 });
 
 test("future ranking and sending stages remain tracked skeletons", async () => {

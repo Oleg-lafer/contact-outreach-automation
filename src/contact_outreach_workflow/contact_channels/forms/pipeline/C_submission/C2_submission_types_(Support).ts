@@ -219,9 +219,6 @@ export interface SubmissionDebugContext {
   networkPath: string;
   buttonAuditPath: string;
   submitCandidatesPath: string;
-  beforeSubmitScreenshotPath: string;
-  afterSubmit2sScreenshotPath: string;
-  afterConfirmationWaitScreenshotPath: string;
 }
 
 export interface FinalizeSubmissionDebugInput {

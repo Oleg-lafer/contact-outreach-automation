@@ -250,8 +250,11 @@ export function outreach_attempt_completion_from_outcome(
 ): OutreachAttemptCompletion {
   if (outcome.executionStatus !== "FINISHED") {
     return {
-      executionStatus:
-        outcome.executionStatus === "SKIPPED" ? "skipped" : "run_failed",
+      executionStatus: outcome.executionStatus === "SKIPPED"
+        ? "skipped"
+        : outcome.executionStatus === "TIMED_OUT"
+          ? "timed_out"
+          : "run_failed",
       formsResult: null,
       emailDiscoveryResult: null,
       meetingDiscoveryResult: null,

@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
+import { createServer } from "node:http";
 import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { chromium, type Browser, type Page } from "playwright";
 import type { ContactRequest } from "../src/contact_outreach_workflow/contact_channels/forms/shared_files_forms/forms_types_(Support).js";
-import { discover_contact_routes } from "../src/contact_outreach_workflow/orchestrator/C_contact_routes/C1_contact_route_discovery_(Integration).js";
+import { ContactRouteScanTimeoutError, discover_contact_routes } from "../src/contact_outreach_workflow/orchestrator/C_contact_routes/C1_contact_route_discovery_(Integration).js";
+import type { DeepDebugContext, DeepDebugEventInput } from "../src/contact_outreach_workflow/shared_files_orchestrator/deep_debug_types_(Support).js";
+import { run_contact_outreach_core } from "../src/contact_outreach_workflow/orchestrator/contact_outreach_core_(Integration).js";
 import { score_contact_route } from "../src/contact_outreach_workflow/orchestrator/C_contact_routes/C2_contact_route_scoring_(Deterministic).js";
 import { discover_contact_form } from "../src/contact_outreach_workflow/contact_channels/forms/pipeline/A_discovery/A1_contact_form_discovery_(Integration).js";
 import { populate_contact_form } from "../src/contact_outreach_workflow/contact_channels/forms/pipeline/B_population/B1_contact_form_population_(Integration).js";
@@ -82,6 +85,72 @@ test("macro route discovery decodes and ranks Hebrew URL paths", async () => {
       );
     },
   );
+});
+
+test("macro route discovery times out a hung frame and records focused diagnostics", async () => {
+  const events: DeepDebugEventInput[] = [];
+  const frame = {
+    url: () => "https://hung.example.test/frame",
+    locator: () => ({ evaluateAll: () => new Promise<never>(() => undefined) }),
+  };
+  const page = {
+    url: () => "https://hung.example.test/",
+    frames: () => [frame],
+  } as unknown as Page;
+  const deepDebug = { record: (event: DeepDebugEventInput) => events.push(event) } as unknown as DeepDebugContext;
+  const started = Date.now();
+
+  await assert.rejects(
+    discover_contact_routes(page, { timeoutMs: 30, deepDebug }),
+    (error: unknown) => {
+      assert.ok(error instanceof ContactRouteScanTimeoutError);
+      assert.equal(error.activeFrameUrl, "https://hung.example.test/frame");
+      assert.equal(error.completedFrames, 0);
+      return true;
+    },
+  );
+
+  assert.ok(Date.now() - started < 500);
+  const timeoutEvent = events.find((event) => event.operation === "scan-contact-links" && event.outcome === "failed");
+  assert.equal(timeoutEvent?.frameUrl, "https://hung.example.test/frame");
+  assert.deepEqual(timeoutEvent?.data, { timeoutMs: 30, completedFrames: 0, discoveredLinks: 0 });
+});
+
+test("full-site watchdog returns TIMED_OUT even before browser setup completes", async () => {
+  const outcome = await run_contact_outreach_core(
+    { ...CONTACT_REQUEST, websiteUrl: "http://127.0.0.1:9/" },
+    { runMode: "production", siteTimeoutMs: 1 },
+  );
+  assert.equal(outcome.executionStatus, "TIMED_OUT");
+  assert.match(outcome.reason ?? "", /Full website workflow timed out/);
+});
+
+test("full-site watchdog preserves completed browser-stage evidence during later channel work", async () => {
+  const server = createServer((request, response) => {
+    if (request.url === "/contact") return;
+    response.writeHead(200, { "content-type": "text/html" });
+    response.end(
+      "<title>Fixture company</title><main><h1>Business consulting services</h1>" +
+      "<p>We provide strategy, implementation, training, and ongoing support for organizations worldwide.</p>" +
+      "<a href='/contact'>Contact our team</a></main>",
+    );
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("Fixture server did not bind.");
+  try {
+    const outcome = await run_contact_outreach_core(
+      { ...CONTACT_REQUEST, websiteUrl: `http://127.0.0.1:${address.port}/` },
+      { runMode: "production", siteTimeoutMs: 5_000 },
+    );
+    assert.equal(outcome.executionStatus, "TIMED_OUT");
+    assert.equal(outcome.browserStage?.schemaVersion, 3);
+    assert.ok(["LOADED", "LOADED_AFTER_TIMEOUT"].includes(outcome.browserStage?.outcome ?? ""));
+    assert.equal(outcome.browserStage?.pageQuality, "USABLE");
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
 });
 
 test("Hebrew form semantics populate supplied values verbatim and accept only required privacy consent", async () => {
@@ -197,7 +266,7 @@ test("macro route discovery ranks and deduplicates only same-origin web routes",
   );
 });
 
-test("same-page inquiry anchors accept strong contact forms that offer no message", async () => {
+test("same-page inquiry anchors reject contact forms that offer no message", async () => {
   await with_local_page(
     `<a href="#consultation">Book a Call</a>
      <form id="consultation"><h2>Consultation</h2><input type="email" name="email"><input name="company"><button>Request a call</button></form>
@@ -207,14 +276,14 @@ test("same-page inquiry anchors accept strong contact forms that offer no messag
         { page, close: async () => undefined },
         page.url(),
       );
-      assert.ok(result.candidate, result.reason);
-      assert.equal(result.candidate.classification, "complete");
-      assert.equal(result.candidate.messageDisposition, "notOffered");
+      assert.equal(result.candidate, undefined);
+      assert.equal(result.failureKind, "population.message_not_found");
+      assert.match(result.reason ?? "", /message field/i);
     },
   );
 });
 
-test("a present but unresolved message-capable control remains blocking", async () => {
+test("a contenteditable message control is populated deterministically", async () => {
   await with_local_page(
     `<main><h1>Contact us</h1><form><input type="email" name="email"><input name="name"><div contenteditable="true" aria-label="Tell us"></div><button>Send</button></form></main>`,
     async (page) => {
@@ -227,8 +296,12 @@ test("a present but unresolved message-capable control remains blocking", async 
         { ...CONTACT_REQUEST, websiteUrl: page.url() },
         discovery.candidate,
       );
-      assert.equal(population.messageDisposition, "unresolved");
-      assert.match(population.blockingReason ?? "", /message field/i);
+      assert.equal(population.messageDisposition, "populated");
+      assert.equal(population.blockingReason, undefined);
+      assert.equal(
+        await page.locator('[contenteditable="true"]').textContent(),
+        CONTACT_REQUEST.message,
+      );
     },
   );
 });

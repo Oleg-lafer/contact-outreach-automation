@@ -208,6 +208,9 @@ export async function assess_contact_form(
           (control) => control.getAttribute("type")?.toLowerCase() === "email",
         ) || semantic.email.test(control_metadata.normalize("NFKC"));
       const normalized_control_metadata = control_metadata.normalize("NFKC");
+      const has_phone = controls.some(
+        (control) => control.getAttribute("type")?.toLowerCase() === "tel",
+      ) || semantic.phone.test(normalized_control_metadata);
       const has_identity = semantic.firstName.test(normalized_control_metadata) ||
         semantic.lastName.test(normalized_control_metadata) ||
         semantic.fullName.test(normalized_control_metadata) ||
@@ -239,18 +242,6 @@ export async function assess_contact_form(
         has_newsletter_context ||
         has_job_context;
 
-      // Some legitimate contact/inquiry forms intentionally collect only
-      // identity and email information. They are safe to submit when the
-      // surrounding semantics are strong enough, even though they cannot
-      // receive the supplied message.
-      const message_less_contact =
-        !has_message &&
-        !has_negative_context &&
-        has_contact_context &&
-        has_email &&
-        has_identity &&
-        has_direct_submit;
-
       let score = 0;
       if (has_contact_context) score += 4;
       if (has_message) score += 6;
@@ -264,9 +255,8 @@ export async function assess_contact_form(
       const complete =
         !has_negative_context &&
         has_submit &&
-        (has_message
-          ? has_email || has_contact_context || controls.length === 1
-          : message_less_contact);
+        has_message &&
+        (has_email || has_phone || has_contact_context || controls.length === 1);
       const progression =
         !complete &&
         !has_negative_context &&
@@ -283,6 +273,7 @@ export async function assess_contact_form(
         visibleControlCount: controls.length,
         hasMessage: has_message,
         hasEmail: has_email,
+        hasPhone: has_phone,
         hasIdentity: has_identity,
         hasBusinessOrProject: has_business_or_project,
         hasSubmit: has_submit,
@@ -291,9 +282,7 @@ export async function assess_contact_form(
         hasNegativeContext: has_negative_context,
       };
       let reason = complete
-        ? message_less_contact
-          ? "accepted as a contact form that intentionally offers no message field"
-          : "accepted as a complete contact form"
+        ? "accepted as a complete contact form"
         : "accepted as a bounded multi-step contact form";
       if (!accepted) {
         if (has_newsletter_context)
@@ -335,6 +324,7 @@ export async function assess_contact_form(
         visibleControlCount: 0,
         hasMessage: false,
         hasEmail: false,
+        hasPhone: false,
         hasIdentity: false,
         hasBusinessOrProject: false,
         hasSubmit: false,

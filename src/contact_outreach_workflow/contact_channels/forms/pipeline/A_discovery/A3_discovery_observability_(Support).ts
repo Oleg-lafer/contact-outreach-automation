@@ -1,6 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { Page } from "playwright";
+import type { DeepDebugContext } from "../../shared_files_forms/deep_debug_types_(Support).js";
 import type {
   FormDiscoveryResult,
   DiscoveryAiActionDebug,
@@ -60,6 +61,7 @@ export async function finalize_discovery_debug(
   result: FormDiscoveryResult,
   collector: DiscoveryDebugCollector,
   artifact_directory?: string,
+  deep_debug?: DeepDebugContext,
 ): Promise<FormDiscoveryResult> {
   if (!artifact_directory) {
     return result;
@@ -70,12 +72,27 @@ export async function finalize_discovery_debug(
   const report_path = join(absolute_directory, "discovery-debug.json");
   let screenshot_path: string | undefined;
   if (!result.candidate) {
-    screenshot_path = join(absolute_directory, "discovery-failure.png");
-    await page
-      .screenshot({ path: screenshot_path, fullPage: true })
-      .catch(() => {
-        screenshot_path = undefined;
-      });
+    if (deep_debug) {
+      screenshot_path = await deep_debug.captureScreenshot(
+        page,
+        "orchestrator",
+        "discovery-failure",
+        { fullPage: true },
+      );
+    } else {
+      screenshot_path = join(absolute_directory, "discovery-failure.jpeg");
+      await page
+        .screenshot({
+          path: screenshot_path,
+          type: "jpeg",
+          quality: 70,
+          fullPage: true,
+          animations: "disabled",
+        })
+        .catch(() => {
+          screenshot_path = undefined;
+        });
+    }
   }
 
   const starting_origin = safe_origin(collector.startingUrl);
@@ -145,10 +162,16 @@ export async function write_blocked_discovery_debug(
   const report_path = join(absolute_directory, "discovery-debug.json");
   const attempted_screenshot_path = join(
     absolute_directory,
-    "discovery-failure.png",
+    "discovery-failure.jpeg",
   );
   const screenshot_written = await page
-    .screenshot({ path: attempted_screenshot_path, fullPage: true })
+    .screenshot({
+      path: attempted_screenshot_path,
+      type: "jpeg",
+      quality: 70,
+      fullPage: true,
+      animations: "disabled",
+    })
     .then(() => true)
     .catch(() => false);
   const summary: DiscoveryDebugSummary = {

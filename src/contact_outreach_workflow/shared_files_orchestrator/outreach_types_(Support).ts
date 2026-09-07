@@ -17,6 +17,12 @@ export type AutomationFailureKind =
   | "discovery.rejected_form"
   | "discovery.llm_unresolved"
   | "population.blocked"
+  | "population.message_not_found"
+  | "population.message_fill_failed"
+  | "population.contact_method_missing"
+  | "submission.message_lost"
+  | "submission.message_integrity"
+  | "submission.contact_method_lost"
   | "submission.no_control"
   | "submission.preflight"
   | "submission.validation"
@@ -29,7 +35,7 @@ export type AutomationFailureKind =
 
 export type AutomationRunMode = "production" | "deep-debug";
 export type AutomationEngine = "playwright" | "stagehand";
-export type WorkflowExecutionStatus = "FINISHED" | "RUN_FAILED" | "SKIPPED";
+export type WorkflowExecutionStatus = "FINISHED" | "RUN_FAILED" | "SKIPPED" | "TIMED_OUT";
 export type WebsiteRunStatus = "pending" | "succeeded" | "failed";
 
 export type DiscoveryAssessment =
@@ -113,15 +119,17 @@ export type BrowserStageOutcome =
   | "NOT_ENTERED";
 
 export type BrowserFailureCategory =
-  | "OUR_SYSTEM_FAILURE"
-  | "DESTINATION_FAILURE"
+  | "OUR_AUTOMATION"
+  | "DESTINATION_WEBSITE"
   | "ACCESS_RESTRICTION"
+  | "NETWORK_INFRASTRUCTURE"
   | "UNDETERMINED";
 
 export type BrowserResponsibleParty =
-  | "OUR_SYSTEM"
-  | "DESTINATION"
-  | "THIRD_PARTY_PATH"
+  | "OUR_AUTOMATION"
+  | "DESTINATION_WEBSITE"
+  | "ACCESS_RESTRICTION"
+  | "NETWORK_INFRASTRUCTURE"
   | "UNKNOWN";
 
 export type BrowserFailureConfidence = "HIGH" | "MEDIUM" | "LOW";
@@ -141,19 +149,105 @@ export interface BrowserStageErrorEvidence {
   name: string;
   code?: string;
   message: string;
+  stack?: string;
   stackFingerprint?: string;
+  cause?: BrowserStageErrorEvidence;
+}
+
+export interface BrowserStageTimelineEvent {
+  sequence: number;
+  at: string;
+  elapsedMs: number;
+  type: string;
+  url?: string;
+  status?: number;
+  detail?: string;
+  initiator?: "OUR_AUTOMATION" | "PLAYWRIGHT" | "BROWSER" | "DESTINATION" | "UNKNOWN";
+  attempt?: number;
+}
+
+export interface BrowserStageResourceSnapshot {
+  at: string;
+  milestone: "LAUNCH" | "NAVIGATION_START" | "FAILURE" | "CLEANUP";
+  rssBytes: number;
+  heapUsedBytes: number;
+  userCpuMicros: number;
+  systemCpuMicros: number;
 }
 
 export interface BrowserStageContentEvidence {
   inspected: boolean;
+  inspectionError?: string;
   readyState?: string;
   titleLength?: number;
   titlePreview?: string;
   bodyTextLength?: number;
   elementCount?: number;
+  semanticElementCount?: number;
   controlCount?: number;
+  formCount?: number;
+  embeddedContentCount?: number;
+  contactRouteCount?: number;
   meaningfulContent: boolean;
   accessRestrictionIndicators: string[];
+  pageQualityIndicators: string[];
+}
+
+export type BrowserNavigationCandidateKind =
+  | "ORIGINAL"
+  | "WWW_HTTPS"
+  | "CANONICAL_HTTPS"
+  | "ORIGINAL_RETRY";
+
+export type BrowserPageQuality =
+  | "USABLE"
+  | "ACCESS_RESTRICTED"
+  | "HTTP_ERROR"
+  | "EMPTY"
+  | "PARKED"
+  | "EXPIRED"
+  | "SITE_ERROR"
+  | "INSECURE_TRANSPORT"
+  | "INSPECTION_FAILED"
+  | "UNUSABLE";
+
+export interface BrowserNavigationAttempt {
+  attempt: number;
+  candidateKind: BrowserNavigationCandidateKind;
+  url: string;
+  retryReason?: string;
+  startedAt: string;
+  finishedAt: string;
+  durationMs: number;
+  timeoutMs: number;
+  committed: boolean;
+  committedUrl?: string;
+  finalUrl: string;
+  outcome: BrowserStageOutcome;
+  mainDocumentReceived: boolean;
+  mainDocumentStatus?: number;
+  pageQuality: BrowserPageQuality;
+  error?: BrowserStageErrorEvidence;
+}
+
+export interface BrowserPreflightEvidence {
+  kind: "DNS" | "HTTP_REDIRECT_PROBE";
+  candidateUrl: string;
+  outcome: "SUCCEEDED" | "FAILED" | "SKIPPED";
+  startedAt: string;
+  finishedAt: string;
+  status?: number;
+  discoveredUrl?: string;
+  detail?: string;
+}
+
+export interface BrowserSecurityEvidence {
+  scheme: "http" | "https" | "other";
+  cleartext: boolean;
+  tlsRequired: boolean;
+  tlsEstablished?: boolean;
+  formSubmissionAllowed: boolean;
+  reason?: string;
 }
 
 export interface BrowserStageHealthEvidence {
@@ -163,10 +257,13 @@ export interface BrowserStageHealthEvidence {
   contextClosedObserved: boolean;
   pageCrashObserved: boolean;
   pageCloseObserved: boolean;
+  browserDisconnectInitiator?: string;
+  contextCloseInitiator?: string;
+  pageCloseInitiator?: string;
 }
 
 export interface BrowserStageResult {
-  schemaVersion: 1;
+  schemaVersion: 3;
   entered: boolean;
   outcome: BrowserStageOutcome;
   originalUrl: string;
@@ -176,15 +273,42 @@ export interface BrowserStageResult {
   durationMs: number;
   phase: BrowserFailurePhase;
   operation: string;
-  attempt: 1;
+  attempt: number;
   timeoutMs: number;
-  waitUntil: "domcontentloaded";
+  waitUntil: "commit";
+  navigationAttempts: BrowserNavigationAttempt[];
+  selectedCandidateKind: BrowserNavigationCandidateKind;
+  selectedCandidate: {
+    attempt: number;
+    kind: BrowserNavigationCandidateKind;
+    url: string;
+  };
+  recoveryEnabled: boolean;
+  recoveryEligible: boolean;
+  recovered: boolean;
+  preflightEvidence: BrowserPreflightEvidence[];
+  pageQuality: BrowserPageQuality;
+  pageQualityEvidence: string[];
+  securityEvidence: BrowserSecurityEvidence;
   redirectChain: string[];
+  normalizedUrl: string;
+  committedUrl?: string;
+  navigationStartedAt: string;
+  navigationFinishedAt: string;
+  lastProgressAt?: string;
+  lastProgressType?: string;
+  timeoutSource?: "PLAYWRIGHT_NAVIGATION" | "WORKFLOW_WATCHDOG" | "CAMPAIGN_RUNNER" | "UNKNOWN";
+  cancellationSource?: string;
+  timeline: BrowserStageTimelineEvent[];
   mainDocumentRequested: boolean;
   mainDocumentReceived: boolean;
   mainDocumentStatus?: number;
   mainDocumentStatusText?: string;
   mainDocumentFailure?: string;
+  responseHeadersReceived: boolean;
+  connectionEstablished?: boolean;
+  tlsEstablished?: boolean;
+  transportEvidenceBasis: "DIRECT" | "INFERRED" | "UNAVAILABLE";
   content: BrowserStageContentEvidence;
   health: BrowserStageHealthEvidence;
   proxyConfigured: boolean;
@@ -197,6 +321,7 @@ export interface BrowserStageResult {
     userCpuMicros: number;
     systemCpuMicros: number;
   };
+  resourceSnapshots: BrowserStageResourceSnapshot[];
   runContext?: {
     campaignId?: number;
     campaignName?: string;
@@ -211,12 +336,16 @@ export interface BrowserStageResult {
   reason?: string;
   evidence: string[];
   contradictions: string[];
+  strongestSupportingEvidence?: string;
+  strongestEvidenceAgainst?: string;
+  classificationBasis?: "DIRECT" | "INFERRED";
+  missingEvidence: string[];
   error?: BrowserStageErrorEvidence;
   diagnosticArtifactPath?: string;
 }
 
 export interface BrowserStageRunSummary {
-  schemaVersion: 1;
+  schemaVersion: 3;
   generatedAt: string;
   totalWebsites: number;
   entered: number;
@@ -228,6 +357,18 @@ export interface BrowserStageRunSummary {
   categoryPercentagesOfFailures: Record<BrowserFailureCategory, number>;
   categoryPercentagesOfEntrants: Record<BrowserFailureCategory, number>;
   subcategoryCounts: Record<string, number>;
+  ourAutomationSubcategoryCounts: Record<string, number>;
+  kpis: {
+    usablePages: number;
+    usableBrowserStageSuccessRate: number;
+    transportLoaded: number;
+    transportLoadRate: number;
+    recoveryEligible: number;
+    recoveredUsable: number;
+    recoveryYield: number;
+    falseLoaded: number;
+    preBrowser: number;
+  };
   ledger: Array<{ siteId: string; websiteUrl: string; browserStage: BrowserStageResult }>;
   preBrowserExclusions: Array<{ websiteUrl: string; reason: string }>;
   reconciliation: {
@@ -252,17 +393,38 @@ export interface OutreachBrowserSession {
   obstructionActions?: PageObstructionAction[];
   browserStage?: BrowserStageResult;
   deepDebug?: DeepDebugContext;
+  dialogController?: BrowserDialogController;
+}
+
+export interface BrowserDialogRecord {
+  sequence: number;
+  timestamp: string;
+  type: "alert" | "beforeunload" | "confirm" | "prompt";
+  message: string;
+  pageUrl: string;
+  phase: "browsing" | "submit";
+  action: "accept" | "dismiss";
+  result: "handled" | "failed";
+  error?: string;
+}
+
+export interface BrowserDialogController {
+  beginSubmit(): number;
+  endSubmit(): void;
+  recordsSince(sequence: number): BrowserDialogRecord[];
+  attach(page: Page): void;
+  detachAll(): void;
 }
 
 export interface PageObstructionAction {
-  kind: "cookieConsent";
+  kind: "cookieConsent" | "promotionalModal";
   action: "reject" | "necessaryOnly" | "close" | "accept";
   label: string;
   result: "clicked" | "failed";
   reason?: string;
   vendor?: CookieConsentVendor;
   attempt?: number;
-  detectionBasis?: "knownVendor" | "consentText";
+  detectionBasis?: "knownVendor" | "consentText" | "promotionalText";
   blockingVerified?: boolean;
   cleared?: boolean;
   verificationReason?: string;
