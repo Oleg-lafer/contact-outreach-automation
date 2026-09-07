@@ -1,4 +1,4 @@
-export const ANALYTICS_SCHEMA_VERSION = 4 as const;
+export const ANALYTICS_SCHEMA_VERSION = 5 as const;
 export const FORM_RULEBOOK_VERSION = "2.0.0" as const;
 export const DISCOVERY_RULEBOOK_VERSION = "1.0.0" as const;
 export const FORM_SIGNAL_RULEBOOK_VERSION = "2.0.0" as const;
@@ -182,10 +182,58 @@ export interface SiteEvidence {
   fullText: string;
   structuredEvidence: string[];
   debugEvidence: string[];
+  discoveryObservability?: DiscoveryObservabilityEvidence;
   browserStage?: BrowserStageArtifactEvidence;
   emails: DiscoveryChannelEvidence;
   meetings: DiscoveryChannelEvidence;
   errors: AnalyticsError[];
+}
+
+export type DiscoveryDiagnosticDisposition =
+  | "confirmed_usable_form"
+  | "probable_missed_form"
+  | "possible_missed_form"
+  | "complete_no_usable_form_observed"
+  | "inspection_incomplete";
+
+export interface DiscoveryObservabilityEvidence {
+  schemaVersion: number;
+  artifactPath: string;
+  disposition: DiscoveryDiagnosticDisposition;
+  assessmentRuleId: string;
+  inspectionIds: string[];
+  candidateIds: string[];
+  evidenceIds: string[];
+  screenshotPaths: string[];
+  routeOutcomes: string[];
+  pageQualities: string[];
+  candidateRuleIds: string[];
+  incompleteReasons: string[];
+  contradictions: string[];
+}
+
+export interface DiscoveryObservabilityAnalytics {
+  availableSites: CountAndSites;
+  legacySites: CountAndSites;
+  dispositions: Record<DiscoveryDiagnosticDisposition, CountAndSites>;
+  assessmentRules: Record<string, CountAndSites>;
+  routeOutcomes: Record<string, CountAndSites>;
+  pageQualities: Record<string, CountAndSites>;
+  candidateRules: Record<string, CountAndSites>;
+  incompleteReasons: Record<string, CountAndSites>;
+  contradictions: Record<string, CountAndSites>;
+  sites: Array<{
+    siteId: string;
+    websiteUrl: string;
+    disposition: DiscoveryDiagnosticDisposition;
+    assessmentRuleId: string;
+    inspectionIds: string[];
+    candidateIds: string[];
+    evidenceIds: string[];
+    screenshotPaths: string[];
+    artifactPath: string;
+    contradictions: string[];
+  }>;
 }
 
 export interface BrowserStageArtifactEvidence {
@@ -441,6 +489,7 @@ export interface FormAnalyticsResult {
   counts: AnalyticsCounts;
   finalAttribution: Record<Exclude<Attribution, "not_applicable">, AttributionStatistics>;
   signalStatistics: FormSignalStatistics;
+  discoveryObservability: DiscoveryObservabilityAnalytics;
   stages: StageStatistics[];
   sites: SiteClassification[];
   errors: AnalyticsError[];

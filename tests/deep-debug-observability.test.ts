@@ -225,13 +225,38 @@ test("deep-debug recorder and workflow artifacts", async (context) => {
     );
   });
 
-  await context.test("retains one JPEG for discovery failures", async () => {
+  await context.test("retains bounded schema-v2 evidence for discovery failures", async () => {
     const discovery = await run_deep_debug("/no-form", "no-form");
     assert.equal(discovery.status, "FAILED", JSON.stringify(discovery));
     await assert_image_artifacts(
       discovery.deepDebug!.artifactDirectory,
       ["discovery-failure.jpeg"],
     );
+    const debug = JSON.parse(await readFile(
+      join(discovery.deepDebug!.artifactDirectory, "discovery-debug.json"),
+      "utf8",
+    )) as {
+      version: number;
+      summary: {
+        inspectionAttempts: Array<{
+          inspectionId: string; phase: string; pageQuality: string;
+          candidateIds: string[]; evidenceIds: string[]; contextExcerpt: string;
+        }>;
+        diagnosticDisposition: string;
+        assessmentRuleId: string;
+        coverageAssessment: { completeEnoughForNoFormConclusion: boolean };
+        limits: { maxInspections: number; maxScreenshots: number };
+      };
+    };
+    assert.equal(debug.version, 2);
+    assert.ok(debug.summary.inspectionAttempts.length >= 1);
+    assert.equal(debug.summary.inspectionAttempts[0]?.inspectionId, "inspection-1");
+    assert.ok((debug.summary.inspectionAttempts[0]?.contextExcerpt.length ?? 501) <= 500);
+    assert.equal(debug.summary.diagnosticDisposition, "complete_no_usable_form_observed");
+    assert.equal(debug.summary.assessmentRuleId, "DISCOVERY-EVIDENCE-COMPLETE-NO-FORM");
+    assert.equal(debug.summary.coverageAssessment.completeEnoughForNoFormConclusion, true);
+    assert.equal(debug.summary.limits.maxInspections, 8);
+    assert.equal(debug.summary.limits.maxScreenshots, 4);
   });
 
   await context.test("finalizes focused contact-route timeout evidence", async () => {

@@ -21,6 +21,7 @@ import type {
 import { create_deep_debug_context } from "./shared_files_forms/deep_debug_observability_(Support).js";
 import type { DeepDebugContext } from "./shared_files_forms/deep_debug_types_(Support).js";
 import { discover_contact_form } from "./pipeline/A_discovery/A1_contact_form_discovery_(Integration).js";
+import { persist_discovery_evidence_debug } from "./pipeline/A_discovery/A3_discovery_observability_(Support).js";
 import {
   collect_discovery_page_signals,
   create_blocked_discovery_outcome,
@@ -125,6 +126,7 @@ export async function run_forms_workflow(
       pageSignals: page_signals,
       networkRecords: browser_session.networkDebugRecorder?.snapshot() ?? [],
     });
+    await persist_discovery_evidence_debug(discovery_assessment.discoveryDebug);
     if (!discovery_result.candidate) {
       deep_debug?.record({
         stage: "orchestrator",

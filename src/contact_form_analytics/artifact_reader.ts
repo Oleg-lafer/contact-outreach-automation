@@ -7,6 +7,7 @@ import type {
   BrowserStageArtifactEvidence,
   DiscoveryChannelEvidence,
   DiscoveryChannelName,
+  DiscoveryObservabilityEvidence,
   FormConfirmationEvidence,
   FormArithmeticSignalEvidence,
   FormMessageSignalEvidence,
@@ -449,6 +450,73 @@ const findUniqueBrowserStageArtifact = async (
   return candidates.length === 1
     ? { artifactPath: candidates[0]!, ambiguous: false }
     : { ambiguous: candidates.length > 1 };
+};
+
+const findUniqueDiscoveryDebugArtifact = async (siteDirectory: string): Promise<string | undefined> => {
+  const deepDebugDirectory = path.join(siteDirectory, "deep-debug");
+  let entries;
+  try {
+    entries = await readdir(deepDebugDirectory, { withFileTypes: true });
+  } catch {
+    return undefined;
+  }
+  const candidates: string[] = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const candidate = path.join(deepDebugDirectory, entry.name, "discovery-debug.json");
+    if (await existingFile(candidate)) candidates.push(candidate);
+  }
+  return candidates.length === 1 ? candidates[0] : undefined;
+};
+
+const parseDiscoveryObservability = (
+  raw: unknown,
+  artifactPath: string,
+  discoveryAssessment: string,
+  searchCoverage: string,
+): DiscoveryObservabilityEvidence | undefined => {
+  if (!isObject(raw) || Number(raw.version) < 2 || !isObject(raw.summary)) return undefined;
+  const summary = raw.summary;
+  const inspections = Array.isArray(summary.inspectionAttempts) ? summary.inspectionAttempts.filter(isObject) : [];
+  const candidates = Array.isArray(summary.candidates) ? summary.candidates.filter(isObject) : [];
+  const evidence = Array.isArray(summary.evidence) ? summary.evidence.filter(isObject) : [];
+  const routes = Array.isArray(summary.attemptedRoutes) ? summary.attemptedRoutes.filter(isObject) : [];
+  const coverage = isObject(summary.coverageAssessment) ? summary.coverageAssessment : {};
+  const contradictions: string[] = [];
+  if (routes.some((route) => route.result === "opened" && route.diagnosticResult === "http_error")) {
+    contradictions.push("opened_route_with_http_error");
+  }
+  if (discoveryAssessment === "strong_form_evidence" && evidence.length === 0) {
+    contradictions.push("strong_form_evidence_without_attribution");
+  }
+  const incompleteReasons = Array.isArray(coverage.incompleteReasons)
+    ? coverage.incompleteReasons.map(stringValue).filter(Boolean) : [];
+  if (searchCoverage === "complete" && incompleteReasons.length > 0) {
+    contradictions.push("complete_search_with_incomplete_coverage");
+  }
+  if (candidates.some((candidate) => {
+    const signals = isObject(candidate.signals) ? candidate.signals : {};
+    return signals.hasSubmit === true && Number(signals.visibleControlCount) === 0;
+  })) contradictions.push("submit_reported_with_zero_visible_controls");
+  const disposition = stringValue(summary.diagnosticDisposition);
+  if (!["confirmed_usable_form", "probable_missed_form", "possible_missed_form", "complete_no_usable_form_observed", "inspection_incomplete"].includes(disposition)) {
+    return undefined;
+  }
+  return {
+    schemaVersion: Number(raw.version),
+    artifactPath,
+    disposition: disposition as DiscoveryObservabilityEvidence["disposition"],
+    assessmentRuleId: stringValue(summary.assessmentRuleId),
+    inspectionIds: inspections.map((item) => stringValue(item.inspectionId)).filter(Boolean),
+    candidateIds: candidates.map((item) => stringValue(item.candidateId)).filter(Boolean),
+    evidenceIds: evidence.map((item) => stringValue(item.evidenceId)).filter(Boolean),
+    screenshotPaths: inspections.map((item) => stringValue(item.screenshotPath)).filter(Boolean),
+    routeOutcomes: routes.map((item) => stringValue(item.diagnosticResult)).filter(Boolean),
+    pageQualities: inspections.map((item) => stringValue(item.pageQuality)).filter(Boolean),
+    candidateRuleIds: candidates.map((item) => stringValue(item.ruleId)).filter(Boolean),
+    incompleteReasons,
+    contradictions: [...new Set(contradictions)],
+  };
 };
 
 const normalizeMessageExcerpt = (value: string): string =>
@@ -1022,6 +1090,30 @@ const readSite = async (runPath: string, directoryName: string): Promise<SiteEvi
     if (debugText) debugEvidence.push(`${debugName}: ${debugText.slice(0, 50_000)}`);
     sourcePaths.push(debugPath);
   }
+  let discoveryObservability: DiscoveryObservabilityEvidence | undefined;
+  const discoveryDebugPath = await findUniqueDiscoveryDebugArtifact(directory);
+  if (discoveryDebugPath) {
+    const discoveryDebugText = await readTextSafe(discoveryDebugPath);
+    if (discoveryDebugText) {
+      try {
+        discoveryObservability = parseDiscoveryObservability(
+          JSON.parse(discoveryDebugText),
+          discoveryDebugPath,
+          discoveryAssessment,
+          searchCoverage,
+        );
+        sourcePaths.push(discoveryDebugPath);
+      } catch {
+        errors.push(makeError(
+          directoryName,
+          "warning",
+          "malformed_discovery_debug_artifact",
+          "Discovery debug artifact could not be parsed.",
+          discoveryDebugPath,
+        ));
+      }
+    }
+  }
 
   if (!websiteUrl) {
     errors.push(makeError(directoryName, "warning", "missing_website_url", "No website URL was found in site artifacts.", directory));
@@ -1069,6 +1161,7 @@ const readSite = async (runPath: string, directoryName: string): Promise<SiteEvi
     fullText: formReport,
     structuredEvidence: compactJsonEvidence(discoveryResult),
     debugEvidence,
+    ...(discoveryObservability ? { discoveryObservability } : {}),
     ...(browserStage ? { browserStage } : {}),
     emails: parseDiscoveryEvidence("emails", outreachSections.get("EMAIL DISCOVERY")),
     meetings: parseDiscoveryEvidence("meetings", outreachSections.get("MEETING DISCOVERY")),

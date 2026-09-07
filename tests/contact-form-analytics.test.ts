@@ -205,6 +205,53 @@ test("deep-debug report is accepted as a full primary artifact", async () => {
   assert.equal(result.errors.some((error) => error.code === "missing_primary_result"), false);
 });
 
+test("schema-v2 discovery observability aggregates dispositions and contradictions", async () => {
+  const runPath = await makeRun();
+  const directory = await writeFull(runPath, 1, {
+    status: "FAILED",
+    failureKind: "discovery.rejected_form",
+    assessment: "strong_form_evidence",
+  });
+  const debugDirectory = path.join(directory, "deep-debug", "run-1");
+  await mkdir(debugDirectory, { recursive: true });
+  await writeFile(path.join(debugDirectory, "discovery-debug.json"), JSON.stringify({
+    version: 2,
+    summary: {
+      diagnosticDisposition: "probable_missed_form",
+      assessmentRuleId: "DISCOVERY-EVIDENCE-STRONG-INDIRECT",
+      inspectionAttempts: [{
+        inspectionId: "inspection-1",
+        pageQuality: "error_page",
+        screenshotPath: "discovery-failure.jpeg",
+      }],
+      candidates: [{
+        candidateId: "candidate-1",
+        ruleId: "DISCOVERY-REJECT-NO-EMAIL",
+        signals: { hasSubmit: true, visibleControlCount: 0 },
+      }],
+      evidence: [{ evidenceId: "evidence-1" }],
+      attemptedRoutes: [{ result: "opened", diagnosticResult: "http_error" }],
+      coverageAssessment: { incompleteReasons: ["http_error: /contact"] },
+    },
+  }));
+
+  const { result, latestDirectory } = await analyzeRun(runPath, {
+    generatedAt: new Date("2026-01-01T00:00:00.000Z"),
+  });
+  const observability = result.channels.forms.discoveryObservability;
+  assert.equal(observability.availableSites.count, 1);
+  assert.equal(observability.dispositions.probable_missed_form.count, 1);
+  assert.equal(observability.routeOutcomes.http_error?.count, 1);
+  assert.equal(observability.candidateRules["DISCOVERY-REJECT-NO-EMAIL"]?.count, 1);
+  assert.equal(observability.contradictions.opened_route_with_http_error?.count, 1);
+  assert.equal(observability.contradictions.submit_reported_with_zero_visible_controls?.count, 1);
+  assert.ok(latestDirectory);
+  assert.match(
+    await readFile(path.join(latestDirectory!, "channels", "forms", "discovery-observability-sites.csv"), "utf8"),
+    /inspection-1.*candidate-1.*evidence-1/,
+  );
+});
+
 test("Discovery mode classifies every assessment without double-counting", async () => {
   const runPath = await makeRun();
   const assessments: DiscoveryFixture[] = [
@@ -719,7 +766,7 @@ test("arithmetic signal output is authoritative across result and production rep
 
   const { result } = await analyzeRun(runPath, { writeOutputs: false });
   const signals = result.channels.forms.signalStatistics;
-  assert.equal(result.schemaVersion, 4);
+  assert.equal(result.schemaVersion, 5);
   assert.deepEqual(signals.arithmetic.evaluated.siteIds, ["001", "002", "005"]);
   assert.deepEqual(signals.arithmetic.notEvaluated.siteIds, ["004"]);
   assert.deepEqual(signals.arithmetic.malformed.siteIds, ["003"]);
@@ -1020,6 +1067,8 @@ test("analysis writes latest and collision-safe history outputs and ignores stal
   );
   const formsDirectory = path.join(first.latestDirectory!, "channels", "forms");
   assert.deepEqual((await readdir(formsDirectory)).sort(), [
+    "discovery-observability-sites.csv",
+    "discovery-observability-statistics.csv",
     "qualitative-statistics-compact.txt",
     "qualitative-statistics-mermaid.md",
     "qualitative-statistics-mermaid.svg",
@@ -1065,7 +1114,7 @@ test("analysis writes latest and collision-safe history outputs and ignores stal
     schemaVersion: number;
     channels: { forms: { rulebookVersion: string } };
   };
-  assert.equal(json.schemaVersion, 4);
+  assert.equal(json.schemaVersion, 5);
   assert.equal(json.channels.forms.rulebookVersion, "2.0.0");
   const compactReport = await readFile(path.join(formsDirectory, "qualitative-statistics-compact.txt"), "utf8");
   assert.doesNotMatch(compactReport, /\bSites:/);
