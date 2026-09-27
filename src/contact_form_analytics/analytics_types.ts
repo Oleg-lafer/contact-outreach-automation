@@ -29,6 +29,7 @@ export type DiscoveryChannelName = Exclude<ChannelName, "forms">;
 export type DiscoveryNormalizedOutcome = (typeof DISCOVERY_OUTCOMES)[number];
 export type DiscoveryRawStatusBucket = "SUCCESS" | "PARTIAL" | "FAILED" | "MISSING" | "OTHER";
 export type WorkflowMode = "full" | "discovery" | "mixed";
+export type AnalysisScope = "run" | "combined_runs";
 export type SiteWorkflowMode = "full" | "discovery" | "conflicting" | "unknown";
 export type RunState = "completed" | "qualified" | "stopped" | "incomplete" | "not_started";
 export type TerminalStage = (typeof STAGES)[number];
@@ -566,6 +567,8 @@ export interface OutreachAnalyticsResult {
   schemaVersion: typeof ANALYTICS_SCHEMA_VERSION;
   generatedAt: string;
   runPath: string;
+  analysisScope: AnalysisScope;
+  sourceRunPaths: string[];
   runMode: WorkflowMode;
   planned: number | null;
   processed: number;

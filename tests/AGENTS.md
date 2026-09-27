@@ -90,8 +90,8 @@ After validation, Codex must report:
   attribution, failure-kind mappings, malformed/contradictory input, and
   history output behavior.
 - `contact-outreach-analytics.test.ts` - aggregate analyzer behavior across
-  forms, emails, and meetings, including independent statuses and exact run
-  directory selection.
+  forms, emails, and meetings, including independent statuses, exact-run
+  compatibility, and combined immediate-child campaign analysis.
 - `deep-debug-observability.test.ts` - opt-in deep-debug artifacts, lifecycle
   evidence, redaction, validation/obstruction diagnostics, and outcome-to-
   artifact consistency.

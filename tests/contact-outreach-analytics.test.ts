@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { analyzeRun } from "../src/contact_form_analytics/contact_form_run_analyzer.js";
+import { analyzePath, analyzeRun } from "../src/contact_form_analytics/contact_form_run_analyzer.js";
 
 type RawStatus = "SUCCESS" | "PARTIAL" | "FAILED";
 
@@ -92,16 +92,44 @@ const writeAggregate = async (
   );
 };
 
+const writeDiscoveryOnly = async (runPath: string, id: number, directoryPrefix = ""): Promise<void> => {
+  const siteId = String(id).padStart(3, "0");
+  const directory = path.join(runPath, `${directoryPrefix}${siteId}`);
+  await mkdir(directory, { recursive: true });
+  await writeFile(
+    path.join(directory, `input-id-${id}.json`),
+    JSON.stringify({ websiteUrl: `https://site-${id}.test/`, name: "Test", email: "sender@example.test", message: "Hello" }),
+  );
+  await writeFile(
+    path.join(directory, "discovery-result.json"),
+    JSON.stringify({
+      version: 1,
+      result: {
+        websiteUrl: `https://site-${id}.test/`,
+        assessment: "confirmed_form_present",
+        contactFormFound: true,
+        presenceEvidenceStrength: "strong",
+        searchCoverage: "complete",
+        description: "A form was found.",
+        evidence: [],
+        limitations: [],
+      },
+    }),
+  );
+};
+
 test("database website-prefixed site directories are analyzed with their numeric IDs", async () => {
   const runPath = await makeRun();
   await writeAggregate(runPath, 42, completeEmail, completeMeeting, "website-");
 
-  const { result } = await analyzeRun(runPath, { writeOutputs: false });
+  const { result } = await analyzePath(runPath, { writeOutputs: false });
 
   assert.equal(result.processed, 1);
   assert.equal(result.channels.forms.sites[0]?.numericId, 42);
   assert.equal(result.channels.emails.sites[0]?.numericId, 42);
   assert.equal(result.channels.meetings.sites[0]?.numericId, 42);
+  assert.equal(result.analysisScope, "run");
+  assert.deepEqual(result.sourceRunPaths, [path.resolve(runPath)]);
 });
 
 const completeEmail: DiscoveryFixture = {
@@ -301,12 +329,76 @@ test("aggregate parsing isolates form fields from email and meeting section stat
   }]);
 });
 
-test("the analyzer requires the exact run directory and does not merge timestamped runs", async () => {
-  const batchRoot = await makeRun();
-  const nestedRun = path.join(batchRoot, "runs", "2026-07-30_02-21-14");
-  await mkdir(nestedRun, { recursive: true });
+test("the CLI-style analyzer combines immediate child runs and retains duplicate website attempts", async () => {
+  const campaignPath = await makeRun();
+  const earlierRun = path.join(campaignPath, "2026-07-30T02-21-14-000Z");
+  const laterRun = path.join(campaignPath, "2026-07-31T02-21-14-000Z");
+  await mkdir(earlierRun, { recursive: true });
+  await mkdir(laterRun, { recursive: true });
+  await writeAggregate(earlierRun, 42, completeEmail, completeMeeting, "website-");
+  await writeAggregate(laterRun, 42, completeEmail, completeMeeting, "website-");
+  await writeFile(path.join(earlierRun, "summary.json"), JSON.stringify({ selectedThisInvocation: 1 }));
+  await writeFile(path.join(laterRun, "summary.json"), JSON.stringify({ selectedThisInvocation: 1 }));
+  await mkdir(path.join(campaignPath, "analytics", "ignored-site", "001"), { recursive: true });
+  await mkdir(path.join(campaignPath, "notes"), { recursive: true });
+
+  const outcome = await analyzePath(campaignPath, {
+    generatedAt: new Date("2026-08-01T00:00:00.000Z"),
+  });
+
+  assert.equal(outcome.result.analysisScope, "combined_runs");
+  assert.deepEqual(outcome.result.sourceRunPaths, [path.resolve(earlierRun), path.resolve(laterRun)]);
+  assert.equal(outcome.result.planned, 2);
+  assert.equal(outcome.result.processed, 2);
+  assert.deepEqual(
+    outcome.result.channels.forms.sites.map((site) => site.id),
+    [
+      "2026-07-30T02-21-14-000Z/website-042",
+      "2026-07-31T02-21-14-000Z/website-042",
+    ],
+  );
+  assert.equal(outcome.result.reconciliation.uniqueSiteEvidence, true);
+  assert.equal(outcome.result.reconciliation.channelSiteIdsAlign, true);
+  assert.equal(outcome.latestDirectory, path.join(path.resolve(campaignPath), "analytics", "latest"));
+  const textReport = await readFile(path.join(outcome.latestDirectory!, "outreach-statistics.txt"), "utf8");
+  assert.match(textReport, /Analysis scope: combined_runs/);
+  assert.match(textReport, /Source runs: 2/);
+
   await assert.rejects(
-    analyzeRun(batchRoot, { writeOutputs: false }),
+    analyzeRun(campaignPath, { writeOutputs: false }),
     /No numeric site directories or recognizable run artifacts/,
+  );
+});
+
+test("combined analytics reports mixed modes and an unknown planned count when any child lacks metadata", async () => {
+  const campaignPath = await makeRun();
+  const fullRun = path.join(campaignPath, "a-full");
+  const discoveryRun = path.join(campaignPath, "b-discovery");
+  await mkdir(fullRun, { recursive: true });
+  await mkdir(discoveryRun, { recursive: true });
+  await writeAggregate(fullRun, 1, completeEmail, completeMeeting);
+  await writeDiscoveryOnly(discoveryRun, 2);
+  await writeFile(path.join(fullRun, "summary.json"), JSON.stringify({ selectedThisInvocation: 1 }));
+
+  const { result } = await analyzePath(campaignPath, { writeOutputs: false });
+
+  assert.equal(result.runMode, "mixed");
+  assert.equal(result.planned, null);
+  assert.equal(result.notStarted, null);
+  assert.match(result.dataQualityWarnings.join("\n"), /at least one source run has no planned count/);
+  assert.deepEqual(
+    result.channels.forms.sites.map((site) => site.id),
+    ["a-full/001", "b-discovery/002"],
+  );
+});
+
+test("the CLI-style analyzer fails clearly when neither direct sites nor child runs exist", async () => {
+  const emptyPath = await makeRun();
+  await mkdir(path.join(emptyPath, "analytics", "latest"), { recursive: true });
+  await mkdir(path.join(emptyPath, "notes"), { recursive: true });
+
+  await assert.rejects(
+    analyzePath(emptyPath, { writeOutputs: false }),
+    /No numeric site directories or qualifying immediate child runs/,
   );
 });

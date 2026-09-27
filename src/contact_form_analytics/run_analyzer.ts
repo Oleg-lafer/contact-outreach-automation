@@ -1,4 +1,3 @@
-import path from "node:path";
 import type {
   AnalyticsCounts,
   AnalyzeOptions,
@@ -17,7 +16,7 @@ import type {
   TerminalStage,
 } from "./analytics_types.js";
 import { ANALYTICS_SCHEMA_VERSION, FORM_RULEBOOK_VERSION, STAGES } from "./analytics_types.js";
-import { readRunArtifacts } from "./artifact_reader.js";
+import { readPathArtifacts, readRunArtifacts, type RunArtifacts } from "./artifact_reader.js";
 import { analyzeDiscoveryChannel } from "./discovery_channel_analyzer.js";
 import { classifySite } from "./rulebook.js";
 import { writeAnalyticsOutputs } from "./report_writer.js";
@@ -203,9 +202,8 @@ const reconcile = (
   };
 };
 
-export const analyzeRun = async (requestedPath: string, options: AnalyzeOptions = {}): Promise<AnalyzeOutcome> => {
-  const artifacts = await readRunArtifacts(requestedPath);
-  const sites = artifacts.sites.map(classifySite).sort((left, right) => left.numericId - right.numericId);
+const analyzeArtifacts = async (artifacts: RunArtifacts, options: AnalyzeOptions): Promise<AnalyzeOutcome> => {
+  const sites = artifacts.sites.map(classifySite);
   const counts = buildCounts(sites, artifacts.plannedCount);
   const stages = STAGES.map((stage) => buildStageStatistics(stage, sites));
   const reconciliation = reconcile(sites, counts, stages);
@@ -256,7 +254,7 @@ export const analyzeRun = async (requestedPath: string, options: AnalyzeOptions 
     schemaVersion: ANALYTICS_SCHEMA_VERSION,
     rulebookVersion: FORM_RULEBOOK_VERSION,
     generatedAt,
-    runPath: path.resolve(requestedPath),
+    runPath: artifacts.runPath,
     runMode: artifacts.mode,
     counts,
     finalAttribution: buildFinalAttribution(sites, counts),
@@ -307,6 +305,8 @@ export const analyzeRun = async (requestedPath: string, options: AnalyzeOptions 
     schemaVersion: ANALYTICS_SCHEMA_VERSION,
     generatedAt,
     runPath: artifacts.runPath,
+    analysisScope: artifacts.analysisScope,
+    sourceRunPaths: artifacts.sourceRunPaths,
     runMode: artifacts.mode,
     planned: artifacts.plannedCount,
     processed: artifacts.sites.length,
@@ -333,3 +333,9 @@ export const analyzeRun = async (requestedPath: string, options: AnalyzeOptions 
   if (output.latestWarning) result.dataQualityWarnings.push(output.latestWarning);
   return { result, ...output };
 };
+
+export const analyzeRun = async (requestedPath: string, options: AnalyzeOptions = {}): Promise<AnalyzeOutcome> =>
+  analyzeArtifacts(await readRunArtifacts(requestedPath), options);
+
+export const analyzePath = async (requestedPath: string, options: AnalyzeOptions = {}): Promise<AnalyzeOutcome> =>
+  analyzeArtifacts(await readPathArtifacts(requestedPath), options);

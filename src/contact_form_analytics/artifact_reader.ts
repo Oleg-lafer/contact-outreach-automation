@@ -4,6 +4,7 @@ import { read_deep_debug_stage_events } from
   "../contact_outreach_workflow/shared_files_orchestrator/deep_debug_timeline_(Support).js";
 import type {
   AnalyticsError,
+  AnalysisScope,
   BrowserStageArtifactEvidence,
   DiscoveryChannelEvidence,
   DiscoveryChannelName,
@@ -32,6 +33,8 @@ interface JsonObject {
 
 export interface RunArtifacts {
   runPath: string;
+  analysisScope: AnalysisScope;
+  sourceRunPaths: string[];
   mode: WorkflowMode;
   plannedCount: number | null;
   sites: SiteEvidence[];
@@ -1276,10 +1279,100 @@ export const readRunArtifacts = async (requestedPath: string): Promise<RunArtifa
 
   return {
     runPath,
+    analysisScope: "run",
+    sourceRunPaths: [runPath],
     mode: inferredMode,
     plannedCount: metadata.plannedCount,
     sites,
     errors: sites.flatMap((site) => site.errors),
     warnings,
   };
+};
+
+const containsSiteDirectories = async (directoryPath: string): Promise<boolean> => {
+  const entries = await readdir(directoryPath, { withFileTypes: true });
+  return entries.some((entry) => entry.isDirectory() && siteDirectoryId(entry.name) !== null);
+};
+
+const combinedMode = (sites: SiteEvidence[]): WorkflowMode => {
+  const full = sites.some((site) => site.mode === "full");
+  const discovery = sites.some((site) => site.mode === "discovery");
+  const conflicting = sites.some((site) => site.mode === "conflicting");
+  if (conflicting || (full && discovery)) return "mixed";
+  return discovery ? "discovery" : "full";
+};
+
+const scopeSiteToRun = (site: SiteEvidence, runName: string): SiteEvidence => {
+  const scopedId = `${runName}/${site.id}`;
+  return {
+    ...site,
+    id: scopedId,
+    errors: site.errors.map((error) => ({ ...error, siteId: scopedId })),
+  };
+};
+
+export const readCombinedRunArtifacts = async (requestedPath: string): Promise<RunArtifacts> => {
+  const runPath = path.resolve(requestedPath);
+  let info;
+  try {
+    info = await stat(runPath);
+  } catch {
+    throw new Error(`Run path does not exist: ${runPath}`);
+  }
+  if (!info.isDirectory()) throw new Error(`Run path is not a directory: ${runPath}`);
+
+  const entries = await readdir(runPath, { withFileTypes: true });
+  const candidates: Array<{ name: string; fullPath: string }> = [];
+  const childDirectories = entries
+    .filter((item) => item.isDirectory() && item.name !== "analytics")
+    .sort((left, right) => left.name.localeCompare(right.name));
+  for (const entry of childDirectories) {
+    const fullPath = path.join(runPath, entry.name);
+    if (await containsSiteDirectories(fullPath)) candidates.push({ name: entry.name, fullPath });
+  }
+  if (candidates.length === 0) {
+    throw new Error(`No numeric site directories or qualifying immediate child runs were found in: ${runPath}`);
+  }
+
+  const childRuns = await Promise.all(candidates.map(async (candidate) => ({
+    ...candidate,
+    artifacts: await readRunArtifacts(candidate.fullPath),
+  })));
+  const sites = childRuns.flatMap(({ name, artifacts }) =>
+    artifacts.sites.map((site) => scopeSiteToRun(site, name))
+  );
+  const everyPlannedCountKnown = childRuns.every(({ artifacts }) => artifacts.plannedCount !== null);
+  const warnings = childRuns.flatMap(({ name, artifacts }) =>
+    artifacts.warnings.map((warning) => `[${name}] ${warning}`)
+  );
+  if (!everyPlannedCountKnown) {
+    warnings.push("Combined planned count is unknown because at least one source run has no planned count.");
+  }
+
+  return {
+    runPath,
+    analysisScope: "combined_runs",
+    sourceRunPaths: childRuns.map(({ fullPath }) => fullPath),
+    mode: combinedMode(sites),
+    plannedCount: everyPlannedCountKnown
+      ? childRuns.reduce((total, { artifacts }) => total + (artifacts.plannedCount ?? 0), 0)
+      : null,
+    sites,
+    errors: sites.flatMap((site) => site.errors),
+    warnings,
+  };
+};
+
+export const readPathArtifacts = async (requestedPath: string): Promise<RunArtifacts> => {
+  const resolvedPath = path.resolve(requestedPath);
+  let info;
+  try {
+    info = await stat(resolvedPath);
+  } catch {
+    throw new Error(`Run path does not exist: ${resolvedPath}`);
+  }
+  if (!info.isDirectory()) throw new Error(`Run path is not a directory: ${resolvedPath}`);
+  return (await containsSiteDirectories(resolvedPath))
+    ? readRunArtifacts(resolvedPath)
+    : readCombinedRunArtifacts(resolvedPath);
 };

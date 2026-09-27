@@ -5,9 +5,10 @@ set "REPOSITORY_DIRECTORY=%~dp0"
 
 if "%~1"=="" (
   echo Usage:
-  echo   run-analytics.bat "C:\path\to\exact-run-directory"
+  echo   run-analytics.bat "C:\path\to\run-or-campaign-directory"
   echo.
-  echo The run directory must directly contain the numeric website directories.
+  echo The directory may directly contain website directories, or it may contain
+  echo immediate child run directories whose analytics should be combined.
   exit /b 2
 )
 
@@ -26,7 +27,7 @@ if errorlevel 1 (
   exit /b 1
 )
 
-echo Running analytics for:
+echo Running analytics for run or campaign:
 echo   %RUN_DIRECTORY%
 echo.
 
