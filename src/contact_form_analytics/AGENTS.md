@@ -13,11 +13,18 @@ discovery, and meeting discovery. Its historical directory name remains
   link is commercially relevant beyond what the report records.
 - Keep forms, emails, and meetings as independent evaluations. Do not invent an
   overall outreach-success status.
-- Preserve `npm run analyze -- "<exact-run-directory>"` and
+- Preserve `npm run analyze -- "<run-or-campaign-directory>"` and
   `analyzeRun(path, options)`.
 
-The input must be the exact run directory containing numeric site directories.
-Do not silently select or merge timestamped runs from a batch root.
+The CLI input may be an exact run directory containing numeric site directories,
+or a campaign directory whose immediate child run directories contain those
+site directories. Exact-run input keeps its established behavior. Campaign
+input produces one combined report under the campaign directory; it ignores
+unrelated immediate children and does not recurse beyond one level. Combined
+attempt IDs are scoped as `<run-folder>/<site-id>` so repeated website IDs are
+retained rather than collapsed. The programmatic `analyzeRun(path, options)`
+API remains exact-run-only; `analyzePath(path, options)` performs CLI-style
+automatic detection.
 
 ## Artifact Contracts
 
@@ -64,7 +71,8 @@ statistics may aggregate recorded providers but must not validate destinations.
 ## Outputs
 
 Every analysis publishes atomically to `analytics/latest` and a collision-safe
-timestamped `analytics/history` directory.
+timestamped `analytics/history` directory under the supplied run or campaign
+directory.
 
 - The root contains `outreach-statistics.txt`,
   `outreach-statistics.json`, `site-channel-matrix.csv`, and `errors.csv`.

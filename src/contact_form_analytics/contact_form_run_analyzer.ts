@@ -1,8 +1,8 @@
-import { analyzeRun } from "./run_analyzer.js";
+import { analyzePath } from "./run_analyzer.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-export { analyzeRun } from "./run_analyzer.js";
+export { analyzePath, analyzeRun } from "./run_analyzer.js";
 
 const incompleteDiscoveryCount = (counts: {
   outcomes: {
@@ -22,12 +22,12 @@ const incompleteDiscoveryCount = (counts: {
 const main = async (): Promise<void> => {
   const runPath = process.argv[2]?.trim();
   if (!runPath) {
-    console.error('Usage: npm run analyze -- "<run-path>"');
+    console.error('Usage: npm run analyze -- "<run-or-campaign-path>"');
     process.exitCode = 2;
     return;
   }
   try {
-    const outcome = await analyzeRun(runPath);
+    const outcome = await analyzePath(runPath);
     const { result } = outcome;
     const { forms, emails, meetings } = result.channels;
     console.log(`Analyzed ${result.processed} site director${result.processed === 1 ? "y" : "ies"}.`);

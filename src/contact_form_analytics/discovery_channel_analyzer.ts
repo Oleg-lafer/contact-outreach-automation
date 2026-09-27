@@ -227,8 +227,7 @@ export const analyzeDiscoveryChannel = (
   generatedAt: string,
 ): DiscoveryChannelAnalyticsResult => {
   const sites = evidenceSites
-    .map((site) => classifySite(site, channel))
-    .sort((left, right) => left.numericId - right.numericId);
+    .map((site) => classifySite(site, channel));
   const rawBuckets: DiscoveryRawStatusBucket[] = ["SUCCESS", "PARTIAL", "FAILED", "MISSING", "OTHER"];
   const rawStatuses = Object.fromEntries(
     rawBuckets.map((value) => [value, countAndSites(sites.filter((site) => rawStatusBucket(site.rawStatus) === value))]),
