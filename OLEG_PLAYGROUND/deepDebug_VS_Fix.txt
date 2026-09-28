@@ -1,0 +1,148 @@
+You are investigating a high failure rate from a real outreach campaign.
+
+Your FIRST task is not to fix the failures.
+
+Your first task is to determine whether the current deep-debug evidence is sufficient to understand and fix this specific failure category reliably.
+
+Classify the situation into exactly one of these states:
+
+DEBUG-READY
+There is enough evidence in the current deep-debug artifacts, logs, screenshots, structured data, campaign outputs, and relevant code paths to understand the actual failure mechanism with reasonable confidence.
+
+If so, the next step is to diagnose and fix the underlying generic problem.
+
+OBSERVABILITY-GAP
+The current evidence is not sufficient to distinguish the real cause from other plausible causes.
+
+If so, do not guess at a fix.
+
+The next step is to improve deep-debug so the next representative run captures the specific missing evidence needed to diagnose this failure category.
+
+What to inspect
+For the failure category I give you:
+
+Identify the exact stage/substage that is failing.
+
+Trace the relevant execution path in the code.
+
+Inspect the existing deep-debug coverage for that path.
+
+Inspect the actual evidence from the failed campaign, including relevant:
+
+logs
+
+structured artifacts
+
+screenshots
+
+runtime errors
+
+browser/navigation evidence
+
+network evidence
+
+debug summaries
+
+campaign/result data
+
+Inspect a representative sample of failures when possible.
+
+Do not assume that all failures with the same high-level status have the same root cause.
+
+Decision rule
+Ask:
+
+If we changed the code now, would the change be supported by evidence, or would we mostly be guessing?
+
+An error message alone does not automatically make the issue DEBUG-READY.
+
+The evidence is sufficient only if it lets us understand the failure well enough to distinguish the main plausible causes and design a generic fix with reasonable confidence.
+
+If important uncertainty remains, classify it as OBSERVABILITY-GAP.
+
+If DEBUG-READY
+Explain:
+
+what evidence makes the issue diagnosable
+
+what the main failure mechanism(s) appear to be
+
+whether there are multiple failure clusters
+
+your confidence
+
+what code should likely change
+
+what tests should be added or updated
+
+Avoid “fixes” that only hide the problem, such as blindly increasing timeouts, adding broad retries, or suppressing failures, unless the evidence supports them.
+
+Prefer fixing the underlying generic behavior.
+
+If OBSERVABILITY-GAP
+Explain exactly what information is missing.
+
+Then define the smallest useful deep-debug improvement needed for the next run.
+
+For each diagnostic addition, specify:
+
+what should be recorded
+
+where it should be recorded
+
+what question it answers
+
+which possible causes it helps distinguish
+
+Do not add excessive logging just for the sake of logging.
+
+Keep diagnostics bounded, structured where practical, and useful for analyzing campaign-scale failures.
+
+Campaign-scale perspective
+The goal is usually to understand why a large percentage of a campaign failed.
+
+Therefore, distinguish between:
+
+isolated edge cases
+
+several different failure clusters
+
+one systematic issue affecting many websites
+
+The main question is:
+
+Why did this failure percentage become so high?
+
+not only:
+
+Why did this one website fail?
+
+Required response
+Start with exactly:
+
+Diagnosis status: DEBUG-READY
+
+or
+
+Diagnosis status: OBSERVABILITY-GAP
+
+Then provide:
+
+Failure being investigated
+
+Evidence inspected
+
+What we currently know
+
+What we still do not know
+
+Decision reasoning
+
+Next action
+
+If DEBUG-READY, describe the likely fix direction.
+
+If OBSERVABILITY-GAP, describe the exact deep-debug improvements needed before attempting a functional fix.
+
+Do not implement a speculative fix when the correct current step is improving observability.
+

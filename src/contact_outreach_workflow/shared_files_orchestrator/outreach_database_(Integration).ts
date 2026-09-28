@@ -16,6 +16,7 @@ import type {
 } from "./outreach_history_types_(Support).js";
 import type { AutomationStatus } from "./outreach_types_(Support).js";
 import { normalize_outreach_domain } from "./website_identity_(Deterministic).js";
+import { replace_unpaired_surrogates, stringify_mysql_safe_json } from "./unicode_text_(Support).js";
 
 interface CampaignRow extends RowDataPacket {
   campaign_id: number;
@@ -150,8 +151,8 @@ export class MysqlOutreachHistoryStore implements OutreachHistoryStore {
         completion.formsResult,
         completion.emailDiscoveryResult,
         completion.meetingDiscoveryResult,
-        input.outcome.reason ?? null,
-        JSON.stringify(input.outcome.channels),
+        input.outcome.reason == null ? null : replace_unpaired_surrogates(input.outcome.reason),
+        stringify_mysql_safe_json(input.outcome.channels),
         input.attemptId,
       ],
     );

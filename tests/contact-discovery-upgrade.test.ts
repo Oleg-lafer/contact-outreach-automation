@@ -13,6 +13,7 @@ import { score_contact_route } from "../src/contact_outreach_workflow/orchestrat
 import { discover_contact_form } from "../src/contact_outreach_workflow/contact_channels/forms/pipeline/A_discovery/A1_contact_form_discovery_(Integration).js";
 import { populate_contact_form } from "../src/contact_outreach_workflow/contact_channels/forms/pipeline/B_population/B1_contact_form_population_(Integration).js";
 import { find_submit_control } from "../src/contact_outreach_workflow/contact_channels/forms/pipeline/C_submission/C3_submit_control_selection_(Deterministic).js";
+import { assess_contact_form } from "../src/contact_outreach_workflow/contact_channels/forms/shared_files_forms/contact_form_intent_(Deterministic).js";
 
 const CONTACT_REQUEST: ContactRequest = {
   websiteUrl: "http://local.test/",
@@ -29,6 +30,21 @@ test.before(async () => {
 
 test.after(async () => {
   await browser.close();
+});
+
+test("form discovery excerpts do not split an emoji at the 500-code-unit limit", async () => {
+  await with_local_page(
+    `<main><form id="x"><p>Contact ${"a".repeat(489)}😀</p>` +
+      `<input type="email"><textarea></textarea><button>Send</button></form></main>`,
+    async (page) => {
+      const assessment = await assess_contact_form(page.locator("form"));
+      assert.ok(assessment.diagnostics, assessment.reason);
+      const excerpt = assessment.diagnostics?.contextExcerpt;
+      assert.equal(excerpt?.length, 499);
+      assert.ok(excerpt?.endsWith("a"));
+      assert.doesNotMatch(excerpt ?? "", /[\uD800-\uDBFF]$/);
+    },
+  );
 });
 
 test("expanded inquiry route phrases share one contact-intent classifier", () => {

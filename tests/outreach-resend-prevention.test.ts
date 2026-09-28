@@ -3,6 +3,7 @@ import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import type { Pool } from "mysql2/promise";
 import {
   campaign_content_from_contact_values,
   collect_campaign_websites,
@@ -16,6 +17,7 @@ import { campaign_website_sync_entries } from "../src/database/synchronize_campa
 import {
   campaign_from_database_row,
   claim_is_still_eligible,
+  MysqlDatabaseCampaignRepository,
   type DatabaseCampaignRepository,
 } from "../src/contact_outreach_workflow/shared_files_orchestrator/database_campaign_repository_(Integration).js";
 import {
@@ -35,6 +37,8 @@ import type {
 } from "../src/contact_outreach_workflow/shared_files_orchestrator/outreach_history_types_(Support).js";
 import type { BrowserStageResult } from "../src/contact_outreach_workflow/shared_files_orchestrator/outreach_types_(Support).js";
 import { normalize_outreach_domain } from "../src/contact_outreach_workflow/shared_files_orchestrator/website_identity_(Deterministic).js";
+import { MysqlOutreachHistoryStore } from "../src/contact_outreach_workflow/shared_files_orchestrator/outreach_database_(Integration).js";
+import { replace_unpaired_surrogates } from "../src/contact_outreach_workflow/shared_files_orchestrator/unicode_text_(Support).js";
 
 class FakeHistoryStore implements OutreachHistoryStore {
   public claims: ClaimOutreachInput[] = [];
@@ -67,6 +71,34 @@ test("normalizes website identity with public suffix rules", () => {
     normalize_outreach_domain("https://team.example.com/contact"),
     "example.com",
   );
+});
+
+test("both database completion paths preserve valid emoji and repair nested lone surrogates", async () => {
+  const writes: unknown[][] = [];
+  const pool = {
+    execute: async (_query: string, parameters: unknown[]) => {
+      writes.push(parameters);
+      return [{ affectedRows: 1 }, []];
+    },
+  } as unknown as Pool;
+  const outcome = create_contact_outreach_outcome(
+    create_form_failure_outcome("https://example.test/", "Form 😀 \uD83D error", "runtime.error"),
+    create_email_failure_outcome("https://example.test/", "Email \uDC00 error"),
+    create_meeting_failure_outcome("https://example.test/", "Meeting 😀 okay"),
+    "RUN_FAILED",
+  );
+  outcome.reason = "Top 😀 \uD83D reason";
+  await new MysqlDatabaseCampaignRepository(pool).completeAttempt(1, outcome);
+  await new MysqlOutreachHistoryStore(pool).completeAttempt({ attemptId: 2, outcome });
+  assert.equal(writes.length, 2);
+  for (const parameters of writes) {
+    assert.equal(parameters[4], "Top 😀 \ufffd reason");
+    const channels = JSON.parse(parameters[5] as string) as typeof outcome.channels;
+    assert.equal(channels.forms.reason, "Form 😀 \ufffd error");
+    assert.equal(channels.emails.reason, "Email \ufffd error");
+    assert.equal(channels.meetings.reason, "Meeting 😀 okay");
+    assert.equal(replace_unpaired_surrogates(parameters[5] as string), parameters[5]);
+  }
 });
 
 test("outreach claim passes campaign and website to the history store", async () => {

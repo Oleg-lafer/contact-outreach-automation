@@ -16,6 +16,7 @@ import type {
 import type { ContactFormAssessment } from "../../shared_files_forms/contact_form_intent_(Deterministic).js";
 import type { DiscoveryReadinessResult } from "../../../../shared_files_orchestrator/discovery_readiness_(Deterministic).js";
 import { collect_discovery_page_signals } from "./A4_discovery_evidence_(Deterministic).js";
+import { replace_unpaired_surrogates } from "../../../../shared_files_orchestrator/unicode_text_(Support).js";
 
 const MAX_INSPECTIONS = 8;
 const MAX_CANDIDATES_PER_INSPECTION = 10;
@@ -96,7 +97,7 @@ export class DiscoveryDebugCollector {
       ...(diagnostics?.tagName ? { tagName: diagnostics.tagName } : {}),
       ...(diagnostics?.action ? { action: safe_url(diagnostics.action) } : {}),
       ...(diagnostics?.method ? { method: diagnostics.method.toUpperCase() } : {}),
-      ...(diagnostics?.contextExcerpt ? { contextExcerpt: diagnostics.contextExcerpt.slice(0, MAX_CONTEXT_LENGTH) } : {}),
+      ...(diagnostics?.contextExcerpt ? { contextExcerpt: replace_unpaired_surrogates(diagnostics.contextExcerpt.slice(0, MAX_CONTEXT_LENGTH)) } : {}),
       ...(diagnostics?.controls ? { controls: diagnostics.controls.slice(0, MAX_CONTROLS_PER_CANDIDATE) } : {}),
       ...(diagnostics?.ruleId ? { ruleId: diagnostics.ruleId } : {}),
       ...(diagnostics?.scoreContributions ? { scoreContributions: diagnostics.scoreContributions } : {}),
@@ -483,10 +484,10 @@ async function capture_discovery_page_state(page: Page): Promise<{
     ].filter(([pattern]) => (pattern as RegExp).test(searchable)).map(([, label]) => label as string);
     return {
       url: location.href,
-      title: document.title.slice(0, 500),
-      language: document.documentElement.lang.slice(0, 50),
-      headingExcerpt: heading.slice(0, 500),
-      contextExcerpt: text.slice(0, 500),
+      title: document.title.slice(0, 500).replace(/[\uD800-\uDBFF]$/, ""),
+      language: document.documentElement.lang.slice(0, 50).replace(/[\uD800-\uDBFF]$/, ""),
+      headingExcerpt: heading.slice(0, 500).replace(/[\uD800-\uDBFF]$/, ""),
+      contextExcerpt: text.slice(0, 500).replace(/[\uD800-\uDBFF]$/, ""),
       errorPageIndicators,
       visibleFormCount: Array.from(document.querySelectorAll("form")).filter(visible).length,
       formLikeContainerCount: Array.from(document.querySelectorAll("main,section,article,div"))

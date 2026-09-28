@@ -11,6 +11,7 @@ import type {
   ContactRequest,
 } from "./outreach_types_(Support).js";
 import type { OutreachSenderDetails } from "./outreach_history_types_(Support).js";
+import { replace_unpaired_surrogates, stringify_mysql_safe_json } from "./unicode_text_(Support).js";
 
 export type DatabaseCandidateMode = "unattempted" | "retry-unsuccessful";
 
@@ -200,8 +201,8 @@ implements DatabaseCampaignRepository {
         completion.formsResult,
         completion.emailDiscoveryResult,
         completion.meetingDiscoveryResult,
-        outcome.reason ?? null,
-        JSON.stringify(outcome.channels),
+        outcome.reason == null ? null : replace_unpaired_surrogates(outcome.reason),
+        stringify_mysql_safe_json(outcome.channels),
         attemptId,
       ],
     );
