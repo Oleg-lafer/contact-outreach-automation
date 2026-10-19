@@ -133,13 +133,13 @@ test("Stagehand discovery normalizes a field locator to its visible form", async
   );
 });
 
-test("Stagehand discovery semantically recovers a structurally strong business inquiry with misleading sign-in text", async () => {
+test("Stagehand discovery semantically recovers a structurally strong business inquiry with misleading careers text", async () => {
   await with_page(
     `<main>
        <h1>Contact our team</h1>
-       <p>Existing clients can sign in elsewhere.</p>
+       <p>Job seekers can find careers information elsewhere.</p>
        <form id="business-inquiry">
-         <p>Sign in access is available for existing clients.</p>
+         <p>Career resources are available for applicants.</p>
          <label>Name <input name="name"></label>
          <label>Business email <input type="email" name="email"></label>
          <label>Company <input name="company"></label>
@@ -258,8 +258,9 @@ test("Stagehand discovery semantically recovers a structurally strong business i
 test("Stagehand discovery keeps a structurally strong form rejected when semantic purpose is not a business inquiry", async () => {
   await with_page(
     `<main>
-       <h1>Contact and sign in</h1>
+       <h1>Contact our team</h1>
        <form id="account-form">
+         <p>Career resources are available for job applicants.</p>
          <label>Name <input name="name"></label>
          <label>Email <input type="email" name="email"></label>
          <label>Company <input name="company"></label>

@@ -165,7 +165,7 @@ test("aggregate reports produce independent forms, email, and meeting evaluation
   );
 
   const { result } = await analyzeRun(runPath, { writeOutputs: false });
-  assert.equal(result.schemaVersion, 5);
+  assert.equal(result.schemaVersion, 6);
   assert.equal(result.planned, 1);
   assert.equal(result.channels.forms.counts.completed, 1);
   assert.equal(result.channels.forms.sites[0]?.status, "SUCCESS");
@@ -363,6 +363,17 @@ test("the CLI-style analyzer combines immediate child runs and retains duplicate
   const textReport = await readFile(path.join(outcome.latestDirectory!, "outreach-statistics.txt"), "utf8");
   assert.match(textReport, /Analysis scope: combined_runs/);
   assert.match(textReport, /Source runs: 2/);
+  const signalExplorer = await readFile(
+    path.join(
+      outcome.latestDirectory!,
+      "channels",
+      "forms",
+      "browser-discovery-signals.html",
+    ),
+    "utf8",
+  );
+  assert.match(signalExplorer, /Browser continued[\s\S]*?<span class="card-count">2<\/span>[\s\S]*?100\.00%/);
+  assert.match(signalExplorer, /Discovery continued[\s\S]*?<span class="card-count">2<\/span>[\s\S]*?100\.00%/);
 
   await assert.rejects(
     analyzeRun(campaignPath, { writeOutputs: false }),

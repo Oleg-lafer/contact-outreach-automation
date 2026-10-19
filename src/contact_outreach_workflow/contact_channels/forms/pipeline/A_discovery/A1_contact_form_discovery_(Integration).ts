@@ -6,7 +6,10 @@ import {
 import { describe_error } from "../../../../shared_files_orchestrator/outreach_errors_(Support).js";
 import { wait_for_discovery_readiness } from "../../../../shared_files_orchestrator/discovery_readiness_(Deterministic).js";
 import { dismiss_cookie_obstruction } from "../../../../shared_files_orchestrator/page_obstructions_(Deterministic).js";
-import { discover_contact_routes } from "../../../../orchestrator/C_contact_routes/C1_contact_route_discovery_(Integration).js";
+import {
+  canonical_contact_route_url,
+  discover_contact_routes,
+} from "../../../../orchestrator/C_contact_routes/C1_contact_route_discovery_(Integration).js";
 import type {
   ContactRouteCandidate,
   ContactRouteDiscoveryResult,
@@ -25,6 +28,10 @@ import {
   capture_discovery_interaction_state,
   finalize_discovery_debug,
 } from "./A3_discovery_observability_(Support).js";
+import {
+  DISCOVERY_ROUTE_ELIGIBILITY_SCORE,
+  is_genuine_form_provider_frame,
+} from "../../shared_files_forms/discovery_evidence_rules_(Deterministic).js";
 
 const FORM_LIKE_CONTAINER_SELECTOR = [
   "main:visible:has(input:visible)",
@@ -37,6 +44,11 @@ const FORM_LIKE_CONTAINER_SELECTOR = [
   "div:visible:has(textarea:visible)",
 ].join(", ");
 const FORM_LIKE_CONTAINER_CONFIDENCE_THRESHOLD = 8;
+const MAX_ADAPTIVE_CONTACT_LINKS = 2;
+
+interface DiscoveryRouteBudget {
+  attempted: number;
+}
 
 /*
  * TOP LEVEL WORKFLOW:
@@ -90,9 +102,12 @@ export async function discover_contact_form(
     options.initialRoutes ??
       (await discover_contact_routes(browser_session.page)),
   );
+  const final_network_id = last_network_record_id(browser_session);
   await collector.captureInspection(browser_session.page, "final", {
     requestedUrl: browser_session.page.url(),
     navigationOutcome: "not_navigated",
+    networkRecordStartId: final_network_id,
+    networkRecordEndId: final_network_id,
   });
   const finalized = await finalize_discovery_debug(
     browser_session.page,
@@ -140,21 +155,27 @@ async function run_contact_form_discovery(
 ): Promise<FormDiscoveryResult> {
   const starting_url = initial_routes.startingUrl;
   collector.recordDiscoveredRoutes(initial_routes.candidates);
+  const initial_network_end = last_network_record_id(browser_session);
   await collector.captureInspection(browser_session.page, "initial", {
     requestedUrl: starting_url,
     navigationOutcome: "not_navigated",
+    networkRecordStartId: 1,
+    networkRecordEndId: initial_network_end,
   });
   const visited_routes = new Set<string>();
+  const route_budget: DiscoveryRouteBudget = { attempted: 0 };
   const initial_result = await discover_generic_contact_form(
-    browser_session.page,
+    browser_session,
     collector,
     visited_routes,
     initial_routes.candidates,
+    route_budget,
   );
   if (initial_result.candidate) {
     return initial_result;
   }
 
+  const spa_network_start = next_network_record_id(browser_session);
   await return_to_starting_page_for_spa_retry(browser_session.page, starting_url);
   const spa_readiness = await wait_for_discovery_readiness(browser_session.page);
   await dismiss_cookie_obstruction(browser_session.page);
@@ -162,15 +183,18 @@ async function run_contact_form_discovery(
     requestedUrl: starting_url,
     navigationOutcome: "loaded",
     readiness: spa_readiness,
+    networkRecordStartId: spa_network_start,
+    networkRecordEndId: last_network_record_id(browser_session),
   });
   const refreshed_routes = await discover_contact_routes(browser_session.page);
   collector.recordDiscoveredRoutes(refreshed_routes.candidates);
 
   const retry_result = await discover_generic_contact_form(
-    browser_session.page,
+    browser_session,
     collector,
     visited_routes,
     refreshed_routes.candidates,
+    route_budget,
   );
   const deterministic_result =
     retry_result.candidate || retry_result.contactPageFound
@@ -188,11 +212,13 @@ async function run_contact_form_discovery(
 }
 
 async function discover_generic_contact_form(
-  page: Page,
+  browser_session: BrowserSession,
   collector: DiscoveryDebugCollector,
   visited_routes: Set<string>,
   contact_routes: ContactRouteCandidate[],
+  route_budget: DiscoveryRouteBudget,
 ): Promise<FormDiscoveryResult> {
+  const page = browser_session.page;
   const inline_candidate = await find_best_contact_form_candidate(
     page,
     collector,
@@ -208,7 +234,12 @@ async function discover_generic_contact_form(
   let contact_page_found = Boolean(inline_candidate);
   let transport_failure_count = 0;
 
-  for (const link of contact_routes.slice(0, MAX_CONTACT_LINKS)) {
+  for (const link of contact_routes) {
+    if (route_budget.attempted >= MAX_CONTACT_LINKS + MAX_ADAPTIVE_CONTACT_LINKS) break;
+    if (
+      route_budget.attempted >= MAX_CONTACT_LINKS &&
+      link.score < DISCOVERY_ROUTE_ELIGIBILITY_SCORE
+    ) continue;
     const canonical_url = canonical_discovery_url(link.url);
     if (visited_routes.has(canonical_url)) {
       collector.recordRoute({
@@ -224,6 +255,8 @@ async function discover_generic_contact_form(
       continue;
     }
     visited_routes.add(canonical_url);
+    route_budget.attempted += 1;
+    const network_record_start = next_network_record_id(browser_session);
     const interaction_started_at = new Date().toISOString();
     const interaction_before = await capture_discovery_interaction_state(page);
     try {
@@ -265,6 +298,8 @@ async function discover_generic_contact_form(
         ...(status !== undefined ? { responseStatus: status } : {}),
         navigationOutcome: diagnostic_result,
         readiness,
+        networkRecordStartId: network_record_start,
+        networkRecordEndId: last_network_record_id(browser_session),
       });
       if (inspection_id) route_record.inspectionId = inspection_id;
       const interaction_after = await capture_discovery_interaction_state(page);
@@ -316,6 +351,8 @@ async function discover_generic_contact_form(
         routeScore: link.score,
         navigationOutcome: timed_out ? "timed_out" : "navigation_failed",
         navigationError: reason,
+        networkRecordStartId: network_record_start,
+        networkRecordEndId: last_network_record_id(browser_session),
       });
       const interaction_after = await capture_discovery_interaction_state(page);
       collector.recordInteraction({
@@ -331,6 +368,7 @@ async function discover_generic_contact_form(
 
   if (progression_fallback) {
     if (canonical_discovery_url(page.url()) !== canonical_discovery_url(progression_fallback.url)) {
+      const network_record_start = next_network_record_id(browser_session);
       await page
         .goto(progression_fallback.url, {
           waitUntil: "domcontentloaded",
@@ -342,6 +380,8 @@ async function discover_generic_contact_form(
       await collector.captureInspection(page, "progressionRevisit", {
         requestedUrl: progression_fallback.url,
         navigationOutcome: "loaded",
+        networkRecordStartId: network_record_start,
+        networkRecordEndId: last_network_record_id(browser_session),
       });
     }
     const candidate = await find_best_contact_form_candidate(
@@ -411,7 +451,12 @@ function classify_rejected_form_candidates(
   }
   if (
     rejected.some((candidate) =>
-      /no message field|no safe non-submit progression/.test(candidate.reason),
+      /no message field|no safe non-submit progression/.test(candidate.reason) ||
+      (!candidate.signals.hasMessage && (
+        candidate.signals.hasContactContext ||
+        candidate.signals.hasEmail ||
+        candidate.signals.hasPhone
+      )),
     )
   ) {
     return "contact forms were found, but none offered a message field or safe multi-step progression";
@@ -451,10 +496,25 @@ async function find_best_contact_form_candidate(
   page: Page,
   collector: DiscoveryDebugCollector,
 ): Promise<ContactFormCandidate | undefined> {
-  const candidates = [
+  let candidates = [
     await find_best_contact_form(page, collector),
     await find_best_form_like_container(page, collector),
   ].filter((candidate): candidate is ContactFormCandidate => Boolean(candidate));
+  if (candidates.length === 0) {
+    const provider_frames = page.frames().filter((frame) => is_genuine_form_provider_frame(frame.url()));
+    if (provider_frames.length > 0) {
+      await Promise.all(provider_frames.map(async (frame) => {
+        await frame.waitForLoadState("domcontentloaded", { timeout: 2_000 }).catch(() => undefined);
+        await frame.locator('form, textarea, input:not([type="hidden"])').first()
+          .waitFor({ state: "attached", timeout: 2_000 })
+          .catch(() => undefined);
+      }));
+      candidates = [
+        await find_best_contact_form(page, collector),
+        await find_best_form_like_container(page, collector),
+      ].filter((candidate): candidate is ContactFormCandidate => Boolean(candidate));
+    }
+  }
   candidates.sort(compare_contact_candidates);
   return candidates[0];
 }
@@ -684,10 +744,15 @@ async function classify_unsupported_contact_experience(
 }
 
 function canonical_discovery_url(value: string): string {
-  const url = new URL(value);
-  url.hostname = url.hostname.toLowerCase();
-  url.pathname = url.pathname.replace(/\/+$/, "") || "/";
-  return url.toString();
+  return canonical_contact_route_url(value);
+}
+
+function last_network_record_id(browser_session: BrowserSession): number {
+  return browser_session.networkDebugRecorder?.snapshot().at(-1)?.id ?? 0;
+}
+
+function next_network_record_id(browser_session: BrowserSession): number {
+  return last_network_record_id(browser_session) + 1;
 }
 
 function safe_debug_url(value: string): string {

@@ -131,7 +131,10 @@ test("Stagehand configuration rejects missing model and dotenv assignments", asy
         OPENROUTER_API_KEY_FILE: key_path,
       }),
       (error: unknown) => {
-        assert.match(String(error), /must contain one non-empty raw token/);
+        assert.match(
+          String(error),
+          /must contain either one raw token or a Java String declaration/,
+        );
         assert.doesNotMatch(String(error), /secret-value/);
         return true;
       },
@@ -152,7 +155,7 @@ test("Stagehand configuration rejects invalid models, missing keys, and empty ke
         OPENROUTER_MODEL: "not-a-provider-model",
         OPENROUTER_API_KEY_FILE: empty_key_path,
       }),
-      /valid OpenRouter model identifier/,
+      /must be a valid model identifier/,
     );
     await assert.rejects(
       load_stagehand_configuration({
@@ -166,7 +169,7 @@ test("Stagehand configuration rejects invalid models, missing keys, and empty ke
         OPENROUTER_MODEL: "provider/model",
         OPENROUTER_API_KEY_FILE: empty_key_path,
       }),
-      /must contain one non-empty raw token/,
+      /must contain either one raw token or a Java String declaration/,
     );
   } finally {
     await rm(directory, { recursive: true, force: true });

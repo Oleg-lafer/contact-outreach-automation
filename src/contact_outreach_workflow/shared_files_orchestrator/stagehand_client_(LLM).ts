@@ -670,7 +670,7 @@ function to_stagehand_action(
 }
 
 function is_valid_model(model: string): boolean {
-  return model.length > 0 && !/\s/.test(model);
+  return /^[^/\s]+\/[^/\s]+$/.test(model);
 }
 
 function extract_api_key(source: string): string {

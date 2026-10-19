@@ -6,7 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { chromium, type Browser, type Page } from "playwright";
 import type { ContactRequest } from "../src/contact_outreach_workflow/contact_channels/forms/shared_files_forms/forms_types_(Support).js";
-import { ContactRouteScanTimeoutError, discover_contact_routes } from "../src/contact_outreach_workflow/orchestrator/C_contact_routes/C1_contact_route_discovery_(Integration).js";
+import { ContactRouteScanTimeoutError, canonical_contact_route_url, discover_contact_routes } from "../src/contact_outreach_workflow/orchestrator/C_contact_routes/C1_contact_route_discovery_(Integration).js";
 import type { DeepDebugContext, DeepDebugEventInput } from "../src/contact_outreach_workflow/shared_files_orchestrator/deep_debug_types_(Support).js";
 import { run_contact_outreach_core } from "../src/contact_outreach_workflow/orchestrator/contact_outreach_core_(Integration).js";
 import { score_contact_route } from "../src/contact_outreach_workflow/orchestrator/C_contact_routes/C2_contact_route_scoring_(Deterministic).js";
@@ -14,6 +14,11 @@ import { discover_contact_form } from "../src/contact_outreach_workflow/contact_
 import { populate_contact_form } from "../src/contact_outreach_workflow/contact_channels/forms/pipeline/B_population/B1_contact_form_population_(Integration).js";
 import { find_submit_control } from "../src/contact_outreach_workflow/contact_channels/forms/pipeline/C_submission/C3_submit_control_selection_(Deterministic).js";
 import { assess_contact_form } from "../src/contact_outreach_workflow/contact_channels/forms/shared_files_forms/contact_form_intent_(Deterministic).js";
+import {
+  classify_discovery_network_record,
+  classify_discovery_provider_resource,
+  evaluate_discovery_evidence,
+} from "../src/contact_outreach_workflow/contact_channels/forms/shared_files_forms/discovery_evidence_rules_(Deterministic).js";
 
 const CONTACT_REQUEST: ContactRequest = {
   websiteUrl: "http://local.test/",
@@ -343,7 +348,7 @@ test("newsletter forms remain rejected and write redacted discovery diagnostics"
           version: number;
           summary: { candidates: Array<{ candidateId: string; inspectionId: string; ruleId: string; controls: unknown[] }> };
         };
-        assert.equal(debug.version, 2);
+        assert.equal(debug.version, 3);
         assert.equal(debug.summary.candidates[0]?.candidateId, "candidate-1");
         assert.equal(debug.summary.candidates[0]?.inspectionId, "inspection-1");
         assert.equal(debug.summary.candidates[0]?.ruleId, "DISCOVERY-REJECT-NEWSLETTER");
@@ -425,6 +430,238 @@ test("email-only and inaccessible contact routes have distinct reasons", async (
     assert.match(result.reason ?? "", /inaccessible/i);
   } finally {
     await context.close();
+  }
+});
+
+test("route canonicalization rejects structural anchors and preserves meaningful destinations", async () => {
+  assert.equal(
+    canonical_contact_route_url("https://EXAMPLE.test/contact/?utm_source=campaign&department=sales#contact-form"),
+    "https://example.test/contact?department=sales#contact-form",
+  );
+  await with_local_page(
+    `<nav>
+       <a href="#main-content">Skip to main content</a>
+       <a href="#top">Back to top</a>
+       <a href="/contact?utm_source=one">Contact</a>
+       <a href="/contact?utm_source=two">Contact us</a>
+       <a href="/contact?department=sales">Contact sales</a>
+     </nav>`,
+    async (page) => {
+      const result = await discover_contact_routes(page);
+      assert.deepEqual(result.candidates.map((candidate) => candidate.url).sort(), [
+        "http://local.test/contact",
+        "http://local.test/contact?department=sales",
+      ]);
+    },
+  );
+});
+
+test("the shared evidence evaluator ignores telemetry and generic provider resources", () => {
+  assert.equal(classify_discovery_network_record({
+    url: "https://www.google.com/rmkt/collect/123/",
+    method: "POST",
+    resourceType: "fetch",
+  }).classification, "unrelated_telemetry");
+  assert.equal(classify_discovery_network_record({
+    url: "https://js.hsforms.net/forms/embed/v2.js",
+    method: "GET",
+    resourceType: "script",
+  }).classification, "provider_resource");
+  assert.equal(classify_discovery_network_record({
+    url: "https://example.test/api/forms/v2/submissions",
+    method: "POST",
+    resourceType: "xhr",
+  }).classification, "confirmed_form_endpoint");
+  assert.equal(classify_discovery_provider_resource(
+    "https://forms.hsforms.com/embed/123", "frame", true,
+  ).role, "form_frame");
+  assert.equal(classify_discovery_provider_resource(
+    "https://calendly.com/example/demo", "frame", true,
+  ).role, "booking_frame");
+
+  const network_only = evaluate_discovery_evidence({
+    candidateFound: false,
+    contactChannelObserved: false,
+    coverageComplete: true,
+    evidence: [{
+      kind: "formLikeNetwork",
+      strength: "strong",
+      description: "network only",
+      networkClassification: "confirmed_form_endpoint",
+    }],
+  });
+  assert.equal(network_only.assessment, "no_form_observed_after_complete_search");
+
+  const possible = evaluate_discovery_evidence({
+    candidateFound: false,
+    contactChannelObserved: false,
+    coverageComplete: true,
+    evidence: [{
+      kind: "recognizedFormEmbed",
+      strength: "moderate",
+      description: "visible provider form frame",
+    }],
+  });
+  assert.equal(possible.assessment, "possible_form_evidence");
+
+  const strong = evaluate_discovery_evidence({
+    candidateFound: false,
+    contactChannelObserved: false,
+    coverageComplete: true,
+    evidence: [
+      { kind: "recognizedFormEmbed", strength: "moderate", description: "visible provider form frame" },
+      {
+        kind: "formLikeNetwork",
+        strength: "moderate",
+        description: "inspection-scoped endpoint",
+        networkClassification: "confirmed_form_endpoint",
+      },
+    ],
+  });
+  assert.equal(strong.assessment, "strong_form_evidence");
+});
+
+test("discovery recognizes external and image submit structures without page-text message false positives", async () => {
+  const accepted_fixtures = [
+    {
+      html: `<section><h1>Contact</h1><form id="external"><input type="email"><textarea></textarea></form><button>Send message</button></section>`,
+      selector: "form",
+    },
+    {
+      html: `<main><h1>Contact</h1><form><input type="email"><textarea></textarea><input type="image" alt="Send message" style="width:32px;height:32px"></form></main>`,
+      selector: "form",
+    },
+    {
+      html: `<section><h1>Contact</h1><div id="fields"><input type="email"><textarea></textarea></div><button>Submit inquiry</button></section>`,
+      selector: "#fields",
+    },
+  ];
+  for (const fixture of accepted_fixtures) {
+    await with_local_page(fixture.html, async (page) => {
+      const assessment = await assess_contact_form(page.locator(fixture.selector));
+      assert.equal(assessment.accepted, true, `${fixture.selector}: ${assessment.reason}`);
+      assert.equal(assessment.signals.hasSubmit, true);
+      assert.equal(assessment.signals.hasMessage, true);
+    });
+  }
+
+  for (const html of [
+    `<main><h1>Contact support</h1><p>How can we help?</p><form><input type="search" placeholder="How can we help?"><button>Search</button></form></main>`,
+    `<main><h1>Page feedback</h1><p>Tell us how we can help.</p><form><label><input type="radio" name="rating">Good</label><button>Send feedback</button></form></main>`,
+  ]) {
+    await with_local_page(html, async (page) => {
+      const assessment = await assess_contact_form(page.locator("form"));
+      assert.equal(assessment.accepted, false);
+      assert.equal(assessment.signals.hasMessage, false);
+    });
+  }
+});
+
+test("one malformed control cannot abort candidate evaluation", async () => {
+  await with_local_page(
+    `<main><h1>Contact</h1><form><input id="broken" type="email"><textarea></textarea><button>Send</button></form></main>`,
+    async (page) => {
+      await page.locator("#broken").evaluate((element) => {
+        Object.defineProperty(element, "getBoundingClientRect", {
+          value: [() => { throw new Error("fixture geometry failure"); }][0],
+        });
+      });
+      const assessment = await assess_contact_form(page.locator("form"));
+      assert.doesNotMatch(assessment.reason, /could not be inspected/i);
+      assert.equal(assessment.signals.hasMessage, true);
+      assert.equal(assessment.signals.hasSubmit, true);
+    },
+  );
+});
+
+test("route inspection uses a shared three-plus-two budget and ignores duplicate URLs", async () => {
+  const artifact_directory = await mkdtemp(join(tmpdir(), "discovery-route-budget-"));
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  try {
+    await page.route("http://local.test/**", (route) => route.fulfill({
+      status: 200,
+      contentType: "text/html",
+      body: "<main><h1>Company information</h1><p>General business information and office details.</p></main>",
+    }));
+    await page.goto("http://local.test/");
+    const initialRoutes = {
+      startingUrl: page.url(),
+      candidates: [
+        { url: "http://local.test/contact-1", label: "Contact one", score: 15 },
+        { url: "http://local.test/contact-1?utm_source=duplicate", label: "Contact duplicate", score: 14 },
+        { url: "http://local.test/contact-2", label: "Contact two", score: 14 },
+        { url: "http://local.test/contact-3", label: "Contact three", score: 13 },
+        { url: "http://local.test/contact-4", label: "Contact four", score: 12 },
+        { url: "http://local.test/contact-5", label: "Contact five", score: 11 },
+        { url: "http://local.test/contact-low", label: "Contact low", score: 10 },
+      ],
+    };
+    const result = await discover_contact_form(
+      { page, close: async () => undefined },
+      page.url(),
+      { artifactDirectory: artifact_directory, initialRoutes },
+    );
+    assert.equal(result.debug?.attemptedRoutes.filter((route) => route.result !== "duplicate").length, 5);
+    assert.equal(result.debug?.attemptedRoutes.filter((route) => route.result === "duplicate").length, 1);
+    assert.equal(result.debug?.coverageAssessment?.eligibleRoutesSkipped, 0);
+    assert.equal(result.debug?.coverageAssessment?.highestSkippedRouteScore, undefined);
+    assert.equal(result.debug?.coverageAssessment?.completeEnoughForNoFormConclusion, true);
+    assert.ok(result.debug?.discoveredRoutes?.some((route) => route.score === 10 && !route.eligible));
+  } finally {
+    await context.close();
+    await rm(artifact_directory, { recursive: true, force: true });
+  }
+});
+
+test("a genuine provider form frame receives one bounded readiness retry", async () => {
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  try {
+    await page.route("http://local.test/", (route) => route.fulfill({
+      contentType: "text/html",
+      body: '<main><h1>Contact us</h1><iframe src="https://forms.hsforms.com/embed/fixture" style="width:600px;height:400px"></iframe></main>',
+    }));
+    await page.route("https://forms.hsforms.com/**", (route) => route.fulfill({
+      contentType: "text/html",
+      body: `<main><div id="mount"></div><script>
+        setTimeout(() => { document.querySelector('#mount').innerHTML = '<form><input type="email"><textarea></textarea><button>Send message</button></form>'; }, 300);
+      </script></main>`,
+    }));
+    await page.goto("http://local.test/");
+    const result = await discover_contact_form(
+      { page, close: async () => undefined },
+      page.url(),
+    );
+    assert.ok(result.candidate, result.reason);
+    assert.equal(result.candidate.frame.url(), "https://forms.hsforms.com/embed/fixture");
+  } finally {
+    await context.close();
+  }
+});
+
+test("diagnostic truncation does not make a completed inspection uncertain", async () => {
+  const artifact_directory = await mkdtemp(join(tmpdir(), "discovery-truncation-"));
+  const forms = Array.from({ length: 35 }, (_, index) =>
+    `<form><h2>Newsletter ${index}</h2><input type="email"><button>Subscribe</button></form>`,
+  ).join("");
+  try {
+    await with_local_page(`<main><h1>Company updates</h1>${forms}</main>`, async (page) => {
+      const result = await discover_contact_form(
+        { page, close: async () => undefined },
+        page.url(),
+        { artifactDirectory: artifact_directory },
+      );
+      assert.equal(result.candidate, undefined);
+      assert.ok((result.debug?.limits?.omittedCandidates ?? 0) > 0);
+      assert.deepEqual(result.debug?.coverageAssessment?.inspectionIncompleteReasons, []);
+      assert.ok(result.debug?.coverageAssessment?.diagnosticTruncationReasons?.includes(
+        "candidate diagnostics truncated",
+      ));
+      assert.equal(result.debug?.coverageAssessment?.completeEnoughForNoFormConclusion, true);
+    });
+  } finally {
+    await rm(artifact_directory, { recursive: true, force: true });
   }
 });
 

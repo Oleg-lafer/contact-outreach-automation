@@ -65,7 +65,9 @@ export function create_form_channel_outcome(
     ? "submission.inconclusive"
     : authoritative_success ? undefined : failure_kind;
   const authoritative_reason = status === "INCONCLUSIVE"
-    ? "submission signals balanced to zero"
+    ? submission_assessment?.reason?.match(/could not be activated/i)
+      ? submission_assessment.reason
+      : "submission signals balanced to zero"
     : authoritative_success ? undefined : reason;
 
   const ai_assistance = summarize_ai_assistance(

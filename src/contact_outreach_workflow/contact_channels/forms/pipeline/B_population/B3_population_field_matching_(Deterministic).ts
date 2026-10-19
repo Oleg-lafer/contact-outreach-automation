@@ -110,9 +110,13 @@ export async function describe_form_like_field(
     const labels = Array.from(field.labels ?? []).map(
       (label) => label.textContent ?? "",
     );
+    const parent = field.parentElement;
+    const parent_control_count = parent?.querySelectorAll(
+      'input:not([type="hidden"]), textarea, select, [contenteditable="true"]',
+    ).length ?? 0;
     const nearby_text = [
       field.closest("label")?.textContent,
-      field.parentElement?.textContent,
+      parent_control_count <= 1 ? parent?.textContent : "",
       field.parentElement?.previousElementSibling?.textContent,
       field.previousElementSibling?.textContent,
       field.nextElementSibling?.textContent,

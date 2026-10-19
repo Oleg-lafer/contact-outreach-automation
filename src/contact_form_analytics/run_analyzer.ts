@@ -76,6 +76,9 @@ const analyzeDiscoveryObservability = (sites: SiteEvidence[]): DiscoveryObservab
       screenshotPaths: site.discoveryObservability!.screenshotPaths,
       artifactPath: site.discoveryObservability!.artifactPath,
       contradictions: site.discoveryObservability!.contradictions,
+      ...(site.discoveryObservability!.reassessment
+        ? { reassessment: site.discoveryObservability!.reassessment }
+        : {}),
     })),
   };
 };

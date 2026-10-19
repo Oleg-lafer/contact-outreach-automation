@@ -1,5 +1,6 @@
-export const ANALYTICS_SCHEMA_VERSION = 5 as const;
-export const FORM_RULEBOOK_VERSION = "2.0.0" as const;
+export const ANALYTICS_SCHEMA_VERSION = 6 as const;
+export const FORM_RULEBOOK_VERSION = "2.1.0" as const;
+export const FORM_DISCOVERY_EVIDENCE_RULEBOOK_VERSION = "2.0.0" as const;
 export const DISCOVERY_RULEBOOK_VERSION = "1.0.0" as const;
 export const FORM_SIGNAL_RULEBOOK_VERSION = "2.0.0" as const;
 export const RULEBOOK_VERSION = FORM_RULEBOOK_VERSION;
@@ -172,6 +173,7 @@ export interface SiteEvidence {
   reason: string;
   failureKind: string;
   discoveryAssessment: string;
+  discoveryReassessment?: DiscoveryReassessmentEvidence;
   presenceEvidenceStrength: string;
   searchCoverage: string;
   description: string;
@@ -197,6 +199,20 @@ export type DiscoveryDiagnosticDisposition =
   | "complete_no_usable_form_observed"
   | "inspection_incomplete";
 
+export interface DiscoveryReassessmentEvidence {
+  version: typeof FORM_DISCOVERY_EVIDENCE_RULEBOOK_VERSION;
+  sourceSchemaVersion: number;
+  recordedAssessment: string;
+  effectiveAssessment: string;
+  recordedDisposition: DiscoveryDiagnosticDisposition;
+  effectiveDisposition: DiscoveryDiagnosticDisposition;
+  changed: boolean;
+  confidence: "high" | "unchanged";
+  ruleId: string;
+  reasons: string[];
+  ignoredEvidenceRuleIds: string[];
+}
+
 export interface DiscoveryObservabilityEvidence {
   schemaVersion: number;
   artifactPath: string;
@@ -211,6 +227,7 @@ export interface DiscoveryObservabilityEvidence {
   candidateRuleIds: string[];
   incompleteReasons: string[];
   contradictions: string[];
+  reassessment?: DiscoveryReassessmentEvidence;
 }
 
 export interface DiscoveryObservabilityAnalytics {
@@ -234,6 +251,7 @@ export interface DiscoveryObservabilityAnalytics {
     screenshotPaths: string[];
     artifactPath: string;
     contradictions: string[];
+    reassessment?: DiscoveryReassessmentEvidence;
   }>;
 }
 
@@ -321,6 +339,7 @@ export interface SiteClassification {
   status: string;
   failureKind: string;
   discoveryAssessment: string;
+  discoveryReassessment?: DiscoveryReassessmentEvidence;
   stageStates: Record<TerminalStage, StageState>;
   browserStage?: BrowserStageArtifactEvidence;
 }

@@ -17,6 +17,8 @@ import type { ContactFormAssessment } from "../../shared_files_forms/contact_for
 import type { DiscoveryReadinessResult } from "../../../../shared_files_orchestrator/discovery_readiness_(Deterministic).js";
 import { collect_discovery_page_signals } from "./A4_discovery_evidence_(Deterministic).js";
 import { replace_unpaired_surrogates } from "../../../../shared_files_orchestrator/unicode_text_(Support).js";
+import { DISCOVERY_ROUTE_ELIGIBILITY_SCORE } from "../../shared_files_forms/discovery_evidence_rules_(Deterministic).js";
+import { canonical_contact_route_url } from "../../../../orchestrator/C_contact_routes/C1_contact_route_discovery_(Integration).js";
 
 const MAX_INSPECTIONS = 8;
 const MAX_CANDIDATES_PER_INSPECTION = 10;
@@ -49,7 +51,7 @@ export class DiscoveryDebugCollector {
     omittedScreenshots: 0,
   };
   private activeInspectionId?: string;
-  private readonly discoveredRouteUrls = new Set<string>();
+  private readonly discoveredRoutesByUrl = new Map<string, { url: string; label: string; score: number; eligible: boolean }>();
   private readonly pendingScreenshots: Array<{ inspectionId: string; fingerprint: string; bytes: Buffer }> = [];
 
   constructor(starting_url: string, enabled = false) {
@@ -61,12 +63,30 @@ export class DiscoveryDebugCollector {
     this.attemptedRoutes.push(record);
   }
 
-  recordDiscoveredRoutes(routes: Array<{ url: string }>): void {
-    for (const route of routes) this.discoveredRouteUrls.add(safe_url(route.url));
+  recordDiscoveredRoutes(routes: Array<{ url: string; label?: string; score?: number }>): void {
+    for (const route of routes) {
+      const url = safe_route_url(route.url);
+      const score = route.score ?? 0;
+      const existing = this.discoveredRoutesByUrl.get(url);
+      if (!existing || score > existing.score) {
+        this.discoveredRoutesByUrl.set(url, {
+          url,
+          label: route.label ?? "",
+          score,
+          eligible: score >= DISCOVERY_ROUTE_ELIGIBILITY_SCORE,
+        });
+      }
+    }
   }
 
   get discoveredRouteCount(): number {
-    return this.discoveredRouteUrls.size;
+    return this.discoveredRoutesByUrl.size;
+  }
+
+  get discoveredRoutes(): Array<{ url: string; label: string; score: number; eligible: boolean }> {
+    return [...this.discoveredRoutesByUrl.values()].sort(
+      (left, right) => right.score - left.score || left.url.localeCompare(right.url),
+    );
   }
 
   recordCandidate(options: {
@@ -130,6 +150,8 @@ export class DiscoveryDebugCollector {
       navigationOutcome?: NonNullable<DiscoveryDebugSummary["inspectionAttempts"]>[number]["navigationOutcome"];
       navigationError?: string;
       readiness?: DiscoveryReadinessResult;
+      networkRecordStartId?: number;
+      networkRecordEndId?: number;
     } = {},
   ): Promise<string | undefined> {
     if (!this.enabled) return undefined;
@@ -190,6 +212,8 @@ export class DiscoveryDebugCollector {
       candidateIds: [],
       evidenceIds: [],
       stateFingerprint: fingerprint,
+      ...(options.networkRecordStartId !== undefined ? { networkRecordStartId: options.networkRecordStartId } : {}),
+      ...(options.networkRecordEndId !== undefined ? { networkRecordEndId: options.networkRecordEndId } : {}),
     });
     if (!this.pendingScreenshots.some((item) => item.fingerprint === fingerprint)) {
       if (this.pendingScreenshots.length < MAX_DISCOVERY_SCREENSHOTS || phase === "final") {
@@ -282,6 +306,7 @@ export async function finalize_discovery_debug(
       result.reason ??
       (result.candidate ? "contact form candidate accepted" : "discovery failed"),
     attemptedRoutes: collector.attemptedRoutes,
+    discoveredRoutes: collector.discoveredRoutes,
     candidates: collector.candidates,
     aiActions: collector.aiActions,
     frames: page.frames().map((frame) => ({
@@ -305,7 +330,7 @@ export async function finalize_discovery_debug(
   };
   await writeFile(
     report_path,
-    `${JSON.stringify({ version: 2, generatedAt: new Date().toISOString(), summary }, null, 2)}\n`,
+    `${JSON.stringify({ version: 3, generatedAt: new Date().toISOString(), summary }, null, 2)}\n`,
     "utf8",
   );
   return { ...result, debug: summary };
@@ -315,22 +340,23 @@ export async function capture_discovery_interaction_state(
   page: Page,
 ): Promise<DiscoveryInteractionState> {
   const counts = await page
-    .evaluate(() => ({
-      visibleFormCount: Array.from(document.querySelectorAll("form")).filter(
-        (element) => {
-          const style = window.getComputedStyle(element as HTMLElement);
-          const bounds = (element as HTMLElement).getBoundingClientRect();
-          return style.display !== "none" && style.visibility !== "hidden" && bounds.width > 0 && bounds.height > 0;
-        },
-      ).length,
+    .evaluate(() => {
+      const visible = [(element: unknown): element is Element => {
+        if (!(element instanceof Element)) return false;
+        try {
+          const style = element.ownerDocument.defaultView?.getComputedStyle(element);
+          const bounds = element.getBoundingClientRect();
+          return Boolean(style && style.display !== "none" && style.visibility !== "hidden" && bounds.width > 0 && bounds.height > 0);
+        } catch {
+          return false;
+        }
+      }][0]!;
+      return {
+      visibleFormCount: Array.from(document.querySelectorAll("form")).filter(visible).length,
       visibleDialogCount: Array.from(
         document.querySelectorAll("dialog[open], [role='dialog'], [aria-modal='true']"),
-      ).filter((element) => {
-        const style = window.getComputedStyle(element as HTMLElement);
-        const bounds = (element as HTMLElement).getBoundingClientRect();
-        return style.display !== "none" && style.visibility !== "hidden" && bounds.width > 0 && bounds.height > 0;
-      }).length,
-    }))
+      ).filter(visible).length,
+    }})
     .catch(() => ({ visibleFormCount: 0, visibleDialogCount: 0 }));
   return {
     url: page.url(),
@@ -395,7 +421,7 @@ export async function write_blocked_discovery_debug(
   };
   await writeFile(
     report_path,
-    `${JSON.stringify({ version: 2, generatedAt: new Date().toISOString(), summary }, null, 2)}\n`,
+    `${JSON.stringify({ version: 3, generatedAt: new Date().toISOString(), summary }, null, 2)}\n`,
     "utf8",
   );
   return summary;
@@ -415,7 +441,7 @@ export async function persist_discovery_evidence_debug(
   if (!summary?.reportPath) return;
   await writeFile(
     summary.reportPath,
-    `${JSON.stringify({ version: 2, generatedAt: new Date().toISOString(), summary }, null, 2)}\n`,
+    `${JSON.stringify({ version: 3, generatedAt: new Date().toISOString(), summary }, null, 2)}\n`,
     "utf8",
   );
 }
@@ -438,12 +464,25 @@ function coverage_assessment(
 ): NonNullable<DiscoveryDebugSummary["coverageAssessment"]> {
   const attempted = collector.attemptedRoutes.filter((route) => !["duplicate", "blocked"].includes(route.result));
   const successful = attempted.filter((route) => route.diagnosticResult === "loaded" || route.diagnosticResult === "redirected");
-  const incomplete = [
+  const inspection_incomplete = [
     ...attempted.filter((route) => ["timed_out", "navigation_failed", "http_error"].includes(route.diagnosticResult ?? ""))
       .map((route) => `${route.diagnosticResult}: ${safe_url(route.url)}`),
     ...(collector.limits.omittedInspections > 0 ? ["inspection limit reached"] : []),
-    ...(collector.limits.omittedCandidates > 0 ? ["candidate limit reached"] : []),
   ];
+  const diagnostic_truncation = [
+    ...(collector.limits.omittedCandidates > 0 ? ["candidate diagnostics truncated"] : []),
+    ...(collector.limits.omittedControls > 0 ? ["control diagnostics truncated"] : []),
+    ...(collector.limits.omittedEvidenceNetworkRecords > 0 ? ["network evidence diagnostics truncated"] : []),
+    ...(collector.limits.omittedScreenshots > 0 ? ["screenshot diagnostics truncated"] : []),
+  ];
+  const attempted_urls = new Set(
+    collector.attemptedRoutes
+      .filter((route) => route.result !== "duplicate")
+      .map((route) => safe_route_url(route.url)),
+  );
+  const eligible = collector.discoveredRoutes.filter((route) => route.eligible);
+  const eligible_attempted = eligible.filter((route) => attempted_urls.has(safe_route_url(route.url)));
+  const eligible_skipped = eligible.filter((route) => !attempted_urls.has(safe_route_url(route.url)));
   const frames = collector.inspectionAttempts.flatMap((inspection) => inspection.frameCount);
   const reveal_observed = collector.inspectionAttempts.reduce(
     (count, inspection) => count + inspection.pageSignals.contactRevealControls.length, 0,
@@ -453,13 +492,33 @@ function coverage_assessment(
     routesAttempted: attempted.length,
     routesSuccessfullyInspected: successful.length,
     routesSkipped: Math.max(0, collector.discoveredRouteCount - attempted.length),
+    eligibleRoutesDiscovered: eligible.length,
+    eligibleRoutesAttempted: eligible_attempted.length,
+    eligibleRoutesSkipped: eligible_skipped.length,
+    ...(eligible_skipped.length > 0
+      ? { highestSkippedRouteScore: Math.max(...eligible_skipped.map((route) => route.score)) }
+      : {}),
     accessibleFrames: frames.reduce((sum, count) => sum + count, 0),
     inaccessibleFrames: 0,
     revealControlsObserved: reveal_observed,
     revealControlsExercised: collector.interactions.length,
-    incompleteReasons: incomplete,
-    completeEnoughForNoFormConclusion: !result.candidate && incomplete.length === 0,
+    incompleteReasons: inspection_incomplete,
+    inspectionIncompleteReasons: inspection_incomplete,
+    diagnosticTruncationReasons: diagnostic_truncation,
+    completeEnoughForNoFormConclusion:
+      !result.candidate && inspection_incomplete.length === 0 && eligible_skipped.length === 0,
   };
+}
+
+function safe_route_url(value: string): string {
+  try {
+    const url = new URL(canonical_contact_route_url(value));
+    url.username = "";
+    url.password = "";
+    return url.toString();
+  } catch {
+    return value.slice(0, MAX_CONTEXT_LENGTH);
+  }
 }
 
 async function capture_discovery_page_state(page: Page): Promise<{
@@ -468,11 +527,16 @@ async function capture_discovery_page_state(page: Page): Promise<{
   visibleDialogCount: number; readyState: string;
 }> {
   return page.evaluate(() => {
-    const visible = (element: Element): boolean => {
-      const style = getComputedStyle(element as HTMLElement);
-      const bounds = (element as HTMLElement).getBoundingClientRect();
-      return style.display !== "none" && style.visibility !== "hidden" && bounds.width > 0 && bounds.height > 0;
-    };
+    const visible = [(element: unknown): element is Element => {
+      if (!(element instanceof Element)) return false;
+      try {
+        const style = element.ownerDocument.defaultView?.getComputedStyle(element);
+        const bounds = element.getBoundingClientRect();
+        return Boolean(style && style.display !== "none" && style.visibility !== "hidden" && bounds.width > 0 && bounds.height > 0);
+      } catch {
+        return false;
+      }
+    }][0]!;
     const text = (document.body?.innerText ?? "").trim().replace(/\s+/g, " ");
     const heading = Array.from(document.querySelectorAll("h1,h2,h3"))
       .filter(visible).map((item) => item.textContent ?? "").join(" ").trim().replace(/\s+/g, " ");

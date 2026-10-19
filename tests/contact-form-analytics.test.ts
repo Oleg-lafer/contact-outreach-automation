@@ -3,8 +3,15 @@ import { mkdtemp, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { pathToFileURL } from "node:url";
 import { gzipSync } from "node:zlib";
+import { chromium } from "playwright";
 import { analyzeRun } from "../src/contact_form_analytics/contact_form_run_analyzer.js";
+import { renderMermaidReport } from "../src/contact_form_analytics/report_writer.js";
+import {
+  buildBrowserDiscoverySignalDashboardData,
+  renderBrowserDiscoverySignalsHtml,
+} from "../src/contact_form_analytics/browser_discovery_signal_dashboard.js";
 import {
   buildSignalDashboardData,
   renderSignalDashboardHtml,
@@ -104,6 +111,51 @@ const writeFull = async (runPath: string, id: number, fixture: FullFixture): Pro
   ].join("\n");
   await writeFile(path.join(directory, "production.txt"), report);
   return directory;
+};
+
+const writeBrowserStage = async (
+  sitePath: string,
+  fixture: {
+    outcome: "LOADED" | "LOADED_AFTER_TIMEOUT" | "FAILED";
+    category?: "OUR_AUTOMATION" | "DESTINATION_WEBSITE" | "NETWORK_INFRASTRUCTURE";
+    subcategory?: string;
+    ruleId?: string;
+    recovered?: boolean;
+  },
+): Promise<void> => {
+  const browserDirectory = path.join(sitePath, "deep-debug", "run-1", "browser");
+  await mkdir(browserDirectory, { recursive: true });
+  await writeFile(path.join(browserDirectory, "browser-stage.json"), JSON.stringify({
+    schemaVersion: 3,
+    entered: true,
+    outcome: fixture.outcome,
+    phase: "INITIAL_NAVIGATION",
+    operation: "page.goto",
+    originalUrl: "https://fixture.test/",
+    finalUrl: "https://fixture.test/",
+    durationMs: 100,
+    timeoutMs: 15_000,
+    waitUntil: "commit",
+    navigationAttempts: [{ attempt: 1 }],
+    mainDocumentRequested: true,
+    mainDocumentReceived: fixture.outcome !== "FAILED",
+    mainDocumentStatus: fixture.outcome === "FAILED" ? null : 200,
+    content: { meaningfulContent: fixture.outcome !== "FAILED" },
+    health: { browserConnected: true, pageClosed: false },
+    category: fixture.category ?? "",
+    responsibleParty: fixture.category ?? "",
+    subcategory: fixture.subcategory ?? "",
+    confidence: "HIGH",
+    ruleId: fixture.ruleId ?? "",
+    reason: fixture.subcategory ?? "browser fixture",
+    classificationBasis: "DIRECT",
+    strongestSupportingEvidence: "fixture evidence",
+    strongestEvidenceAgainst: "none",
+    missingEvidence: [],
+    pageQuality: fixture.outcome === "FAILED" ? "" : "USABLE",
+    recoveryEligible: fixture.recovered ?? false,
+    recovered: fixture.recovered ?? false,
+  }));
 };
 
 const writeSignalFull = async (
@@ -351,6 +403,459 @@ test("Full mode attributes browser, population, submission, partial, and incompl
   assert.equal(forms.sites.find((site) => site.id === "006")?.subcategory, "submission_unconfirmed");
   assert.equal(forms.sites.find((site) => site.id === "007")?.runState, "incomplete");
   assert.equal(forms.sites.find((site) => site.id === "007")?.attribution, "not_applicable");
+});
+
+test("legacy Discovery reassessment is conservative, auditable, and leaves v3 decisions intact", async () => {
+  const runPath = await makeRun();
+  const sites = await Promise.all([1, 2, 3, 4].map((id) => writeFull(runPath, id, {
+    status: "FAILED",
+    failureKind: "discovery.rejected_form",
+    assessment: "possible_form_evidence",
+  })));
+  const writeDebug = async (
+    sitePath: string,
+    version: number,
+    overrides: Record<string, unknown> = {},
+  ): Promise<void> => {
+    const debugDirectory = path.join(sitePath, "deep-debug", "run-1");
+    await mkdir(debugDirectory, { recursive: true });
+    await writeFile(path.join(debugDirectory, "discovery-debug.json"), JSON.stringify({
+      version,
+      summary: {
+        diagnosticDisposition: "possible_missed_form",
+        assessmentRuleId: "DISCOVERY-EVIDENCE-POSSIBLE-INDIRECT",
+        inspectionAttempts: [{
+          inspectionId: "inspection-1",
+          pageQuality: "usable",
+          navigationOutcome: "not_navigated",
+          pageSignals: { contactChannels: [] },
+        }],
+        candidates: [],
+        frames: [],
+        interactions: [],
+        evidence: [{
+          evidenceId: "evidence-1",
+          kind: "formLikeNetwork",
+          strength: "weak",
+        }],
+        evidenceNetworkRecords: [{
+          ruleId: "DISCOVERY-NETWORK-SEMANTIC",
+          providerMatched: false,
+          url: "https://telemetry.test/form-data",
+        }],
+        attemptedRoutes: [],
+        coverageAssessment: {
+          completeEnoughForNoFormConclusion: true,
+          routesSkipped: 0,
+          incompleteReasons: [],
+        },
+        ...overrides,
+      },
+    }));
+  };
+
+  await writeDebug(sites[0]!, 2, {
+    candidates: [{ candidateId: "candidate-low", score: 4, accepted: false }],
+    evidence: [
+      { evidenceId: "evidence-1", kind: "formLikeNetwork", strength: "weak" },
+      { evidenceId: "evidence-2", kind: "rejectedForm", strength: "weak" },
+    ],
+  });
+  await writeDebug(sites[1]!, 2, {
+    candidates: [{
+      candidateId: "candidate-message",
+      score: 6,
+      accepted: false,
+      ruleId: "DISCOVERY-REJECT-NO-SUBMIT",
+      reason: "form has no visible submit control",
+      controls: [{ tagName: "textarea", type: "textarea" }],
+    }],
+    evidence: [{ evidenceId: "evidence-2", kind: "rejectedForm", strength: "moderate" }],
+    evidenceNetworkRecords: [],
+  });
+  await writeDebug(sites[2]!, 2, {
+    coverageAssessment: {
+      completeEnoughForNoFormConclusion: true,
+      routesSkipped: 1,
+      incompleteReasons: [],
+    },
+  });
+  await writeDebug(sites[3]!, 3, {
+    evidenceRulebookVersion: "2.0.0",
+    assessmentRuleId: "DISCOVERY-EVIDENCE-POSSIBLE-STRUCTURAL",
+  });
+
+  const { result, latestDirectory } = await analyzeRun(runPath, {
+    generatedAt: new Date("2026-01-02T00:00:00.000Z"),
+  });
+  const byId = new Map(result.channels.forms.sites.map((site) => [site.numericId, site]));
+  assert.equal(byId.get(1)?.discoveryAssessment, "no_form_observed_after_complete_search");
+  assert.equal(byId.get(1)?.discoveryReassessment?.changed, true);
+  assert.equal(byId.get(1)?.discoveryReassessment?.recordedAssessment, "possible_form_evidence");
+  assert.deepEqual(byId.get(1)?.discoveryReassessment?.ignoredEvidenceRuleIds, [
+    "DISCOVERY-NETWORK-SEMANTIC",
+  ]);
+  assert.equal(byId.get(2)?.discoveryAssessment, "possible_form_evidence");
+  assert.match(byId.get(2)?.discoveryReassessment?.reasons.join(" ") ?? "", /high-quality form candidate/i);
+  assert.equal(byId.get(3)?.discoveryAssessment, "possible_form_evidence");
+  assert.match(byId.get(3)?.discoveryReassessment?.reasons.join(" ") ?? "", /skipped one or more routes/i);
+  assert.equal(byId.get(4)?.discoveryReassessment?.sourceSchemaVersion, 3);
+  assert.equal(byId.get(4)?.discoveryReassessment?.changed, false);
+
+  const discovery = result.channels.forms.stages.find((stage) => stage.stage === "discovery");
+  assert.equal(discovery?.attribution.non_workflow_attributable.count, 1);
+  assert.equal(discovery?.attribution.indeterminate.count, 3);
+  assert.ok(latestDirectory);
+  const csv = await readFile(path.join(
+    latestDirectory!, "channels", "forms", "discovery-reassessment-sites.csv",
+  ), "utf8");
+  assert.match(csv, /recorded_assessment,effective_assessment/);
+  assert.match(csv, /possible_form_evidence,no_form_observed_after_complete_search/);
+  assert.match(csv, /DISCOVERY-REASSESSMENT-V2-CONSERVATIVE-NO-FORM/);
+});
+
+test("Mermaid funnel uses stage-specific explanations and highlights automation-attributable stops", async () => {
+  const runPath = await makeRun();
+  await writeFull(runPath, 1, { status: "SUCCESS", attempted: true, confirmed: true });
+  await writeFull(runPath, 2, {
+    status: "FAILED",
+    failureKind: "navigation.failed",
+    reason: "Browser launch failure prevented navigation",
+    assessment: "site_inspection_blocked",
+  });
+  await writeFull(runPath, 3, {
+    status: "FAILED",
+    failureKind: "navigation.failed",
+    reason: "page.goto: net::ERR_NAME_NOT_RESOLVED",
+    assessment: "site_inspection_blocked",
+  });
+  await writeFull(runPath, 4, {
+    status: "FAILED",
+    failureKind: "navigation.failed",
+    reason: "page.goto: Timeout 15000ms exceeded",
+    assessment: "site_inspection_blocked",
+  });
+  await writeFull(runPath, 5, {
+    status: "FAILED",
+    failureKind: "discovery.no_form",
+    reason: "No form was observed after a complete search",
+    assessment: "no_form_observed_after_complete_search",
+  });
+  await writeFull(runPath, 6, {
+    status: "FAILED",
+    failureKind: "discovery.no_form",
+    reason: "Only possible form evidence was observed",
+    assessment: "possible_form_evidence",
+  });
+  await writeFull(runPath, 7, {
+    status: "FAILED",
+    failureKind: "population.blocked",
+    reason: "Required message field could not be populated",
+  });
+  await writeFull(runPath, 8, {
+    status: "FAILED",
+    failureKind: "submission.no_control",
+    reason: "No actionable submit control was found",
+  });
+  await writeFull(runPath, 9, {
+    status: "FAILED",
+    failureKind: "submission.captcha",
+    reason: "CAPTCHA physically blocked submission",
+    attempted: true,
+  });
+  await writeFull(runPath, 10, {
+    status: "PARTIAL",
+    failureKind: "submission.unconfirmed",
+    reason: "Submission was attempted, but no explicit confirmation appeared",
+    attempted: true,
+  });
+
+  const outcome = await analyzeRun(runPath);
+  const report = renderMermaidReport(outcome.result.channels.forms);
+  assert.match(report, /Automation-related loading issue: 1/);
+  assert.match(report, /Link or website is broken/);
+  assert.match(report, /Unable to determine the cause/);
+  assert.match(report, /No suitable contact form is available/);
+  assert.match(report, /Unable to determine whether a suitable form exists/);
+  assert.match(report, /The form could not be completed automatically: 1/);
+  assert.match(report, /The automation could not complete or verify the submission: 1/);
+  assert.match(report, /The website prevented or rejected the submission: 1/);
+  assert.match(report, /Unable to determine the submission outcome: 1/);
+  assert.doesNotMatch(report, /Automation-related discovery issue/);
+  assert.doesNotMatch(report, /(?:Non-workflow|Indeterminate|Workflow-attributable):/);
+  assert.match(report, /classDef stage fill:#374151,stroke:#111827,color:#f9fafb/);
+  assert.match(report, /\"wrappingWidth\": 600/);
+  assert.match(report, /classDef failure fill:#fee2e2,stroke:#b91c1c,color:#1f2937/);
+  assert.match(report, /color:#dc2626 !important;font-weight:700/);
+
+  const svg = await readFile(
+    path.join(outcome.latestDirectory!, "channels", "forms", "qualitative-statistics-mermaid.svg"),
+    "utf8",
+  );
+  assert.match(svg, /Automation-related loading issue/);
+  assert.match(svg, /The form could not be completed automatically/);
+  assert.match(svg, /The automation could not complete or verify the submission/);
+  assert.match(svg, /(?:#374151|rgb\(55,\s*65,\s*81\))/i);
+  assert.match(svg, /(?:#fee2e2|rgb\(254,\s*226,\s*226\))/i);
+  assert.match(svg, /(?:#dc2626|rgb\(220,\s*38,\s*38\))/i);
+  assert.match(svg, /font-weight:\s*700/i);
+});
+
+test("Browser and Discovery outcome explorer partitions entrants and canonicalizes observed signals", async () => {
+  const runPath = await makeRun();
+  const success = await writeFull(runPath, 1, { status: "SUCCESS", attempted: true, confirmed: true });
+  const externalBrowser = await writeFull(runPath, 2, {
+    status: "FAILED",
+    failureKind: "navigation.failed",
+    reason: "page.goto: net::ERR_NAME_NOT_RESOLVED",
+    assessment: "site_inspection_blocked",
+  });
+  const automationBrowser = await writeFull(runPath, 3, {
+    status: "FAILED",
+    failureKind: "navigation.failed",
+    reason: "Browser launch failure prevented navigation",
+    assessment: "site_inspection_blocked",
+  });
+  const unresolvedBrowser = await writeFull(runPath, 4, {
+    status: "FAILED",
+    failureKind: "navigation.failed",
+    reason: "Navigation timed out",
+    assessment: "site_inspection_blocked",
+  });
+  const externalDiscovery = await writeFull(runPath, 5, {
+    status: "FAILED",
+    failureKind: "discovery.no_form",
+    reason: "No form was observed after a complete search",
+    assessment: "no_form_observed_after_complete_search",
+  });
+  const unresolvedDiscovery = await writeFull(runPath, 6, {
+    status: "FAILED",
+    failureKind: "discovery.no_form",
+    reason: "Only possible form evidence was observed",
+    assessment: "possible_form_evidence",
+  });
+
+  await writeBrowserStage(success, { outcome: "LOADED", recovered: true });
+  await writeBrowserStage(externalBrowser, {
+    outcome: "FAILED",
+    category: "DESTINATION_WEBSITE",
+    subcategory: "dns_resolution_failure",
+    ruleId: "BRW-DNS-FAILURE",
+  });
+  await writeBrowserStage(automationBrowser, {
+    outcome: "FAILED",
+    category: "OUR_AUTOMATION",
+    subcategory: "browser_launch_failure",
+    ruleId: "BRW-STRUCTURED-OUR-SYSTEM",
+  });
+  await writeBrowserStage(unresolvedBrowser, {
+    outcome: "FAILED",
+    category: "NETWORK_INFRASTRUCTURE",
+    subcategory: "navigation_timeout",
+    ruleId: "BRW-STRUCTURED-NETWORK",
+  });
+
+  const writeDiscoveryDebug = async (
+    sitePath: string,
+    summary: Record<string, unknown>,
+  ): Promise<void> => {
+    const debugDirectory = path.join(sitePath, "deep-debug", "run-1");
+    await mkdir(debugDirectory, { recursive: true });
+    await writeFile(
+      path.join(debugDirectory, "discovery-debug.json"),
+      JSON.stringify({ version: 2, summary }),
+    );
+  };
+  await writeDiscoveryDebug(success, {
+    diagnosticDisposition: "confirmed_usable_form",
+    assessmentRuleId: "DISCOVERY-EVIDENCE-CONFIRMED-FORM",
+    inspectionAttempts: [{ inspectionId: "success-inspection", pageQuality: "usable" }],
+    candidates: [{ candidateId: "success-candidate", ruleId: "DISCOVERY-CANDIDATE-COMPLETE" }],
+    evidence: [{ evidenceId: "success-evidence" }],
+    attemptedRoutes: [{ result: "opened", diagnosticResult: "loaded" }],
+    coverageAssessment: { incompleteReasons: [] },
+  });
+  await writeDiscoveryDebug(externalDiscovery, {
+    diagnosticDisposition: "complete_no_usable_form_observed",
+    assessmentRuleId: "DISCOVERY-EVIDENCE-COMPLETE-NO-FORM",
+    inspectionAttempts: [{ inspectionId: "external-inspection", pageQuality: "usable" }],
+    candidates: [{ candidateId: "external-candidate", ruleId: "DISCOVERY-REJECT-NEWSLETTER" }],
+    evidence: [],
+    attemptedRoutes: [{ result: "opened", diagnosticResult: "loaded" }],
+    coverageAssessment: { incompleteReasons: [] },
+  });
+  await writeDiscoveryDebug(unresolvedDiscovery, {
+    diagnosticDisposition: "possible_missed_form",
+    assessmentRuleId: "DISCOVERY-EVIDENCE-POSSIBLE-INDIRECT",
+    inspectionAttempts: [{ inspectionId: "unresolved-inspection", pageQuality: "error_page" }],
+    candidates: [{ candidateId: "unresolved-candidate", ruleId: "DISCOVERY-REJECT-NO-SUBMIT" }],
+    evidence: [],
+    attemptedRoutes: [{ result: "failed", diagnosticResult: "timed_out" }],
+    coverageAssessment: {
+      incompleteReasons: [
+        "timed_out: https://private-route-one.test/contact",
+        "timed_out: https://private-route-two.test/contact",
+      ],
+    },
+  });
+
+  const { result } = await analyzeRun(runPath, { writeOutputs: false });
+  const forms = result.channels.forms;
+  const data = buildBrowserDiscoverySignalDashboardData(forms);
+  assert.deepEqual(data.browser.buckets.map((bucket) => bucket.count), [3, 1, 2]);
+  assert.deepEqual(
+    data.browser.buckets.map((bucket) => bucket.percentageOfEntrants),
+    [50, 16.67, 33.33],
+  );
+  assert.deepEqual(data.discovery.buckets.map((bucket) => bucket.count), [1, 1, 1]);
+  assert.deepEqual(
+    data.discovery.buckets.map((bucket) => bucket.percentageOfEntrants),
+    [33.33, 33.33, 33.33],
+  );
+  assert.equal(data.browser.reconciles, true);
+  assert.equal(data.discovery.reconciles, true);
+  const timeoutSignal = data.discovery.buckets[2].signals.find(
+    (signal) => signal.label === "Route timed out" && signal.family === "Incomplete evidence",
+  );
+  assert.equal(timeoutSignal?.count, 1);
+  assert.deepEqual(timeoutSignal?.siteIds, ["006"]);
+  for (const section of [data.browser, data.discovery]) {
+    for (const bucket of section.buckets) {
+      for (const signal of bucket.signals) {
+        assert.equal(signal.siteIds.length, new Set(signal.siteIds).size);
+        assert.ok(signal.count > 0);
+      }
+    }
+  }
+
+  const incompleteSource = forms.sites[0]!;
+  const withIncomplete = {
+    ...forms,
+    sites: [
+      ...forms.sites,
+      {
+        ...incompleteSource,
+        id: "synthetic-incomplete",
+        runState: "incomplete" as const,
+        terminalStage: "reporting" as const,
+        attribution: "not_applicable" as const,
+        discoveryAssessment: "",
+        stageStates: {
+          ...incompleteSource.stageStates,
+          browser: "advanced" as const,
+          discovery: "incomplete" as const,
+        },
+      },
+    ],
+  };
+  const incompleteData = buildBrowserDiscoverySignalDashboardData(withIncomplete);
+  assert.deepEqual(incompleteData.discovery.buckets.map((bucket) => bucket.count), [1, 1, 2]);
+  assert.equal(incompleteData.discovery.reconciles, true);
+
+  const report = renderBrowserDiscoverySignalsHtml(forms);
+  assert.match(report, /Browser &amp; Discovery Outcome Explorer/);
+  assert.match(report, /Browser continued/);
+  assert.match(report, /Destination-related stop/);
+  assert.match(report, /Automation involvement cannot be ruled out/);
+  assert.match(report, /No suitable form available/);
+  assert.match(report, /Route timed out/);
+  assert.match(report, /--green-bg: #dcfce7/);
+  assert.match(report, /--grey-bg: #f3f4f6/);
+  assert.match(report, /--red-bg: #fee2e2/);
+  assert.match(report, /aria-expanded="false"/);
+  assert.match(report, /data-ready="false"/);
+  assert.match(report, /class="explorer-layout"/);
+  assert.match(report, /id="outcome-details"/);
+  assert.doesNotMatch(report, /scrollIntoView/);
+  assert.match(report, /visibleLimit = 50/);
+  assert.match(report, /Search by attempt ID or website/);
+  assert.doesNotMatch(report, /private-route/);
+  assert.deepEqual(
+    buildBrowserDiscoverySignalDashboardData(forms),
+    buildBrowserDiscoverySignalDashboardData(forms),
+  );
+
+  const dashboardPath = path.join(runPath, "browser-discovery-signals.html");
+  await writeFile(dashboardPath, report);
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const page = await browser.newPage({ viewport: { width: 1600, height: 900 } });
+    await page.goto(pathToFileURL(dashboardPath).href);
+    await page.locator("#browser-discovery-explorer[data-ready='true']").waitFor();
+    assert.equal(await page.locator(".outcome-card").count(), 6);
+    const sidePanel = page.locator("#outcome-details");
+    assert.equal(await sidePanel.isVisible(), true);
+    assert.equal(await sidePanel.locator(":scope > *").count(), 0);
+    const summaryBox = await page.locator(".summary-column").boundingBox();
+    const panelBox = await sidePanel.boundingBox();
+    assert.ok(summaryBox && panelBox && panelBox.x > summaryBox.x);
+
+    const browserExternalCard = page.locator("#browser-external_stop");
+    await page.evaluate(() => window.scrollTo(0, 120));
+    const scrollBeforeSelection = await page.evaluate(() => window.scrollY);
+    await browserExternalCard.click();
+    assert.equal(await page.evaluate(() => window.scrollY), scrollBeforeSelection);
+    assert.equal(await browserExternalCard.getAttribute("aria-expanded"), "true");
+    assert.equal(await sidePanel.isVisible(), true);
+    assert.equal(await sidePanel.evaluate((element) => element.classList.contains("external")), true);
+    assert.equal(
+      await sidePanel.evaluate((element) => getComputedStyle(element).backgroundColor),
+      await browserExternalCard.evaluate((element) => getComputedStyle(element).backgroundColor),
+    );
+    const dnsSignal = sidePanel.locator(".signal-button").filter({ hasText: "DNS resolution failure" });
+    await dnsSignal.click();
+    assert.match(await sidePanel.locator("tbody").innerText(), /002/);
+    assert.match(await sidePanel.locator("tbody").innerText(), /https:\/\/site-2\.test\//);
+    const search = sidePanel.locator("input[type='search']");
+    await search.fill("does-not-exist");
+    assert.match(await sidePanel.locator(".empty").innerText(), /No attempts match/);
+    await page.keyboard.press("Escape");
+    assert.equal(await browserExternalCard.getAttribute("aria-expanded"), "false");
+    assert.equal(await sidePanel.isVisible(), true);
+    assert.equal(await sidePanel.locator(":scope > *").count(), 0);
+    assert.equal(await sidePanel.evaluate((element) => element.classList.contains("is-empty")), true);
+
+    const discoveryUnresolvedCard = page.locator("#discovery-automation_not_ruled_out");
+    await discoveryUnresolvedCard.focus();
+    await page.keyboard.press("Enter");
+    assert.equal(await discoveryUnresolvedCard.getAttribute("aria-expanded"), "true");
+    assert.equal(await sidePanel.evaluate((element) => element.classList.contains("unresolved")), true);
+    assert.equal(
+      await sidePanel.evaluate((element) => getComputedStyle(element).backgroundColor),
+      await discoveryUnresolvedCard.evaluate((element) => getComputedStyle(element).backgroundColor),
+    );
+    assert.equal(
+      await sidePanel.locator(".signal-button").filter({ hasText: "Route timed out" }).count() > 0,
+      true,
+    );
+
+    const externalTemplate = forms.sites.find((site) => site.id === "002")!;
+    const manyExternal = {
+      ...forms,
+      sites: Array.from({ length: 55 }, (_, index) => ({
+        ...externalTemplate,
+        id: `bulk-${String(index + 1).padStart(3, "0")}`,
+        websiteUrl: index === 0
+          ? "</script><script>window.__dashboardInjected=true</script>"
+          : `https://bulk-${index + 1}.test/`,
+      })),
+    };
+    const manyReport = renderBrowserDiscoverySignalsHtml(manyExternal);
+    assert.doesNotMatch(manyReport, /<\/script><script>window\.__dashboardInjected/);
+    const manyPath = path.join(runPath, "browser-discovery-signals-many.html");
+    await writeFile(manyPath, manyReport);
+    await page.goto(pathToFileURL(manyPath).href);
+    await page.locator("#browser-discovery-explorer[data-ready='true']").waitFor();
+    await page.locator("#browser-external_stop").click();
+    await page.locator("#outcome-details .signal-button").filter({ hasText: "DNS resolution failure" }).click();
+    assert.equal(await page.locator("#outcome-details tbody tr").count(), 50);
+    assert.equal(await page.locator("#outcome-details .show-more").isVisible(), true);
+    await page.locator("#outcome-details .show-more").click();
+    assert.equal(await page.locator("#outcome-details tbody tr").count(), 55);
+    assert.equal(await page.evaluate(() => (window as typeof window & { __dashboardInjected?: boolean }).__dashboardInjected), undefined);
+  } finally {
+    await browser.close();
+  }
 });
 
 test("structured contradictions become indeterminate and malformed input remains workflow-attributable", async () => {
@@ -766,7 +1271,7 @@ test("arithmetic signal output is authoritative across result and production rep
 
   const { result } = await analyzeRun(runPath, { writeOutputs: false });
   const signals = result.channels.forms.signalStatistics;
-  assert.equal(result.schemaVersion, 5);
+  assert.equal(result.schemaVersion, 6);
   assert.deepEqual(signals.arithmetic.evaluated.siteIds, ["001", "002", "005"]);
   assert.deepEqual(signals.arithmetic.notEvaluated.siteIds, ["004"]);
   assert.deepEqual(signals.arithmetic.malformed.siteIds, ["003"]);
@@ -1067,8 +1572,10 @@ test("analysis writes latest and collision-safe history outputs and ignores stal
   );
   const formsDirectory = path.join(first.latestDirectory!, "channels", "forms");
   assert.deepEqual((await readdir(formsDirectory)).sort(), [
+    "browser-discovery-signals.html",
     "discovery-observability-sites.csv",
     "discovery-observability-statistics.csv",
+    "discovery-reassessment-sites.csv",
     "qualitative-statistics-compact.txt",
     "qualitative-statistics-mermaid.md",
     "qualitative-statistics-mermaid.svg",
@@ -1114,25 +1621,45 @@ test("analysis writes latest and collision-safe history outputs and ignores stal
     schemaVersion: number;
     channels: { forms: { rulebookVersion: string } };
   };
-  assert.equal(json.schemaVersion, 5);
-  assert.equal(json.channels.forms.rulebookVersion, "2.0.0");
+  assert.equal(json.schemaVersion, 6);
+  assert.equal(json.channels.forms.rulebookVersion, "2.1.0");
   const compactReport = await readFile(path.join(formsDirectory, "qualitative-statistics-compact.txt"), "utf8");
   assert.doesNotMatch(compactReport, /\bSites:/);
   assert.doesNotMatch(compactReport, /\[[0-9]+(?:, [0-9]+)*\]/);
   assert.match(compactReport, /FINAL RESPONSIBILITY ATTRIBUTION/);
   const mermaidReport = await readFile(path.join(formsDirectory, "qualitative-statistics-mermaid.md"), "utf8");
   assert.match(mermaidReport, /```mermaid/);
-  assert.match(mermaidReport, /BROWSER -->\|"Browser failure:/);
-  assert.match(mermaidReport, /SUBMISSION -->\|"Submission success:/);
+  assert.match(mermaidReport, /BROWSER -->\|"Browser continued:/);
+  assert.match(mermaidReport, /BROWSER -->\|"Stopped at browser:/);
+  assert.match(mermaidReport, /DISCOVERY -->\|"Discovery continued:/);
+  assert.match(mermaidReport, /DISCOVERY -->\|"Stopped at discovery:/);
+  assert.match(mermaidReport, /POPULATION -->\|"Population continued:/);
+  assert.match(mermaidReport, /POPULATION -->\|"Stopped at population:/);
+  assert.match(mermaidReport, /SUBMISSION -->\|"Confirmed success:/);
+  assert.match(mermaidReport, /SUBMISSION -->\|"Submission not confirmed:/);
+  assert.doesNotMatch(mermaidReport, /Browser (?:success|failure):/);
   assert.doesNotMatch(mermaidReport, /\bSites:/);
   const mermaidSvg = await readFile(
     path.join(formsDirectory, "qualitative-statistics-mermaid.svg"),
     "utf8",
   );
   assert.match(mermaidSvg, /<svg /);
-  assert.match(mermaidSvg, /Confirmed successful submissions/);
+  assert.match(mermaidSvg, /Browser continued/);
+  assert.match(mermaidSvg, /Stopped at browser/);
+  assert.match(mermaidSvg, /Confirmed success/);
+  assert.match(mermaidSvg, /Submission not confirmed/);
   assert.doesNotMatch(mermaidSvg, /<br>/i);
   assert.match(mermaidSvg, /<br\/>/i);
+  const browserDiscoveryReport = await readFile(
+    path.join(formsDirectory, "browser-discovery-signals.html"),
+    "utf8",
+  );
+  assert.match(browserDiscoveryReport, /Browser &amp; Discovery Outcome Explorer/);
+  assert.match(browserDiscoveryReport, /Browser continued/);
+  assert.match(browserDiscoveryReport, /Discovery continued/);
+  assert.match(browserDiscoveryReport, /Destination-related stop/);
+  assert.match(browserDiscoveryReport, /Automation involvement cannot be ruled out/);
+  assert.match(browserDiscoveryReport, /data-ready="false"/);
   const proportionalSvg = await readFile(
     path.join(formsDirectory, "qualitative-statistics-proportional.svg"),
     "utf8",

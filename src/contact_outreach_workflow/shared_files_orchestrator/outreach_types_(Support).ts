@@ -492,6 +492,8 @@ export interface NetworkDebugRecord {
   url: string;
   resourceType: string;
   startedAt: string;
+  frameUrl?: string;
+  navigationRequest?: boolean;
   postDataPreview?: string;
   status?: number;
   failureText?: string;

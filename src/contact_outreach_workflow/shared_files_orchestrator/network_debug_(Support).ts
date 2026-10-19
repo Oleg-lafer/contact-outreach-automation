@@ -11,12 +11,20 @@ export function start_network_debug_recorder(
 
   const on_request = (request: Request): void => {
     const post_data = request.postData();
+    let frame_url: string | undefined;
+    try {
+      frame_url = request.frame().url();
+    } catch {
+      // Service-worker and detached-frame requests do not always expose a frame.
+    }
     const record: NetworkDebugRecord = {
       id: records.length + 1,
       method: request.method(),
       url: redact_diagnostic_url(request.url(), redaction_values),
       resourceType: request.resourceType(),
       startedAt: new Date().toISOString(),
+      ...(frame_url ? { frameUrl: redact_diagnostic_url(frame_url, redaction_values) } : {}),
+      navigationRequest: request.isNavigationRequest(),
       ...(post_data
         ? {
             postDataPreview: describe_post_data_schema(

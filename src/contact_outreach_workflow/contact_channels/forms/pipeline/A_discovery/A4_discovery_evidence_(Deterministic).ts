@@ -9,14 +9,20 @@ import type {
   PresenceEvidenceStrength,
   DiscoveryInspectionAttemptDebug,
   DiscoveryNetworkEvidenceDebug,
+  DiscoveryProviderResource,
+  DiscoveryFormCandidateDebug,
 } from "../../shared_files_forms/forms_types_(Support).js";
+import {
+  classify_discovery_network_record,
+  classify_discovery_provider_resource,
+  DISCOVERY_EVIDENCE_RULEBOOK_VERSION,
+  evaluate_discovery_evidence,
+  genuine_form_provider_frames,
+  is_genuine_form_provider_frame,
+} from "../../shared_files_forms/discovery_evidence_rules_(Deterministic).js";
 
-const FORM_PROVIDER_PATTERN =
-  /hubspot|hsforms|marketo|pardot|salesforce|jotform|typeform|formstack|wufoo|gravityforms|gravity_form|calendly|cal\.com/i;
 const FORM_RESOURCE_PATTERN =
   /contact|inquir|enquir|lead|form|quote|consult|booking|book-a-call|request|message|submit|submission|צור.?קשר|טופס|הצעת.?מחיר|ייעוץ|פגישה|פנייה|פניה|הודעה|שליחה/iu;
-const ANALYTICS_PATTERN =
-  /google-analytics|googletagmanager|doubleclick|segment\.io|hotjar|clarity|facebook\.com\/tr|linkedin\.com\/px|analytics/i;
 
 export async function collect_discovery_page_signals(
   page: Page,
@@ -67,24 +73,33 @@ export async function collect_discovery_page_signals(
         channels.push("externalBooking");
       }
 
-      const resource_urls = Array.from(
+      const is_visible = [(element: Element): boolean => {
+        const view = element.ownerDocument.defaultView;
+        if (!view) return false;
+        try {
+          const style = view.getComputedStyle(element);
+          const bounds = element.getBoundingClientRect();
+          return style.display !== "none" && style.visibility !== "hidden" && bounds.width > 0 && bounds.height > 0;
+        } catch {
+          return false;
+        }
+      }][0]!;
+      const resources = Array.from(
         document.querySelectorAll("iframe[src], script[src]"),
       )
-        .map((element) => element.getAttribute("src") ?? "")
-        .filter(Boolean);
+        .map((element) => ({
+          url: element.getAttribute("src") ?? "",
+          source: element.tagName.toLowerCase() === "iframe" ? "iframe" : "script",
+          visible: element.tagName.toLowerCase() === "iframe" ? is_visible(element) : false,
+        }))
+        .filter((resource) => Boolean(resource.url));
       const controls = Array.from(
         document.querySelectorAll("button, [role='button'], a:not([href])"),
       )
         .filter((element) => {
-          const html_element = element as HTMLElement;
-          const style = window.getComputedStyle(html_element);
-          const bounds = html_element.getBoundingClientRect();
           return (
             !element.closest("form") &&
-            style.display !== "none" &&
-            style.visibility !== "hidden" &&
-            bounds.width > 0 &&
-            bounds.height > 0
+            is_visible(element)
           );
         })
         .map((element) =>
@@ -104,13 +119,26 @@ export async function collect_discovery_page_signals(
           ),
         )
         .slice(0, 10);
-      return { bodyContext: body_context, channels, resourceUrls: resource_urls, controls };
+      return { bodyContext: body_context, channels, resources, controls };
     });
 
-  const frame_urls = page.frames().map((frame) => frame.url()).filter(Boolean);
-  const recognized_embeds = [...page_signals.resourceUrls, ...frame_urls]
-    .filter((url) => FORM_PROVIDER_PATTERN.test(url))
-    .map(safe_url);
+  const dom_resources = page_signals.resources.map((resource) =>
+    classify_discovery_provider_resource(
+      safe_url(resource.url),
+      resource.source as "iframe" | "script",
+      resource.visible,
+    ),
+  );
+  const dom_frame_urls = new Set(
+    dom_resources.filter((resource) => resource.source === "iframe").map((resource) => safe_url(resource.url)),
+  );
+  const frame_resources = page.frames().map((frame) => safe_url(frame.url())).filter(Boolean)
+    .filter((url) => !dom_frame_urls.has(url))
+    .map((url) => classify_discovery_provider_resource(url, "frame", true));
+  const provider_resources = deduplicate_provider_resources([...dom_resources, ...frame_resources]);
+  const recognized_embeds = provider_resources
+    .filter((resource) => resource.role === "form_frame" && resource.visible)
+    .map((resource) => resource.url);
   const valid_channels = page_signals.channels.filter(
     is_contact_channel,
   ) as DiscoveryPageSignals["contactChannels"];
@@ -125,6 +153,7 @@ export async function collect_discovery_page_signals(
     ),
     contactChannels: contact_channels,
     recognizedFormEmbeds: [...new Set(recognized_embeds)],
+    providerResources: provider_resources,
     contactRevealControls: [...new Set(page_signals.controls)],
   };
 }
@@ -148,6 +177,13 @@ export function create_discovery_outcome(options: {
   const limitations: string[] = [];
   const debug = discoveryResult.debug;
   const rejected_candidates = debug?.candidates.filter((candidate) => !candidate.accepted) ?? [];
+  const inspection_signals = debug?.inspectionAttempts?.length
+    ? debug.inspectionAttempts.map((inspection) => ({
+        inspectionId: inspection.inspectionId,
+        signals: inspection.pageSignals,
+      }))
+    : [{ inspectionId: undefined, signals: pageSignals }];
+  const all_page_signals = merge_page_signals(inspection_signals.map((entry) => entry.signals));
 
   if (discoveryResult.candidate) {
     evidence.push({
@@ -157,23 +193,39 @@ export function create_discovery_outcome(options: {
       url: safe_url(discoveryResult.candidate.frame.url() || finalUrl),
     });
   }
-  for (const url of pageSignals.recognizedFormEmbeds) {
-    evidence.push({
-      kind: "recognizedFormEmbed",
-      strength: pageSignals.contactContext ? "strong" : "moderate",
-      description: pageSignals.contactContext
-        ? "recognized form-provider embed appeared in contact context"
-        : "recognized form-provider resource appeared without enough contact context",
-      url,
-    });
+  for (const entry of inspection_signals) {
+    for (const resource of entry.signals.providerResources ?? []) {
+      if (resource.role === "form_frame" && resource.visible) {
+        evidence.push({
+          ...(entry.inspectionId ? { inspectionId: entry.inspectionId } : {}),
+          kind: "recognizedFormEmbed",
+          strength: "moderate",
+          description: "visible recognized form-provider frame could not be validated as a usable form",
+          url: resource.url,
+          provider: resource.provider,
+          providerRole: resource.role,
+        });
+      } else if (resource.provider || resource.role !== "unknown_provider_resource") {
+        evidence.push({
+          ...(entry.inspectionId ? { inspectionId: entry.inspectionId } : {}),
+          kind: "providerResource",
+          strength: "weak",
+          description: `observed ${resource.role.replaceAll("_", " ")}; this does not prove that a usable form exists`,
+          url: resource.url,
+          provider: resource.provider,
+          providerRole: resource.role,
+          ignoredReason: "generic provider, chat, booking, or analytics resources are not form-presence evidence",
+        });
+      }
+    }
   }
-  evidence.push(
-    ...network_form_evidence(
-      networkRecords,
-      pageSignals,
-      debug?.interactions ?? [],
-    ),
+  const network_result = network_form_evidence(
+    networkRecords,
+    debug?.inspectionAttempts ?? [],
+    debug?.candidates ?? [],
+    debug?.interactions ?? [],
   );
+  evidence.push(...network_result.evidence);
 
   for (const route of debug?.attemptedRoutes ?? []) {
     if (route.result === "opened") {
@@ -189,14 +241,17 @@ export function create_discovery_outcome(options: {
       );
     }
   }
-  for (const control of pageSignals.contactRevealControls) {
+  for (const control of all_page_signals.contactRevealControls) {
+    const changed = (debug?.interactions ?? []).some((interaction) =>
+      interaction.pageStateChanged && interaction.label === control,
+    );
     evidence.push({
       kind: "contactRevealControl",
-      strength: "weak",
+      strength: changed ? "moderate" : "weak",
       description: `visible contact-oriented reveal control: ${control}`,
     });
   }
-  for (const channel of pageSignals.contactChannels) {
+  for (const channel of all_page_signals.contactChannels) {
     evidence.push({
       kind: "contactChannel",
       strength: "weak",
@@ -204,15 +259,11 @@ export function create_discovery_outcome(options: {
     });
   }
   for (const candidate of rejected_candidates) {
-    if (
-      candidate.signals.hasContactContext &&
-      /could not be inspected|no visible submit|no visible email|sufficient contact shape|message field/i.test(
-        candidate.reason,
-      )
-    ) {
+    if (credible_rejected_candidate(candidate)) {
       evidence.push({
+        ...(candidate.inspectionId ? { inspectionId: candidate.inspectionId } : {}),
         kind: "rejectedForm",
-        strength: "weak",
+        strength: candidate.signals.hasMessage && candidate.signals.hasEmail ? "moderate" : "weak",
         description: `contact-like form candidate remained inconclusive: ${candidate.reason}`,
         url: safe_url(candidate.url),
       });
@@ -234,44 +285,25 @@ export function create_discovery_outcome(options: {
   if (
     !discoveryResult.candidate &&
     (debug?.frames ?? []).some(
-      (frame) => !frame.sameOrigin && FORM_PROVIDER_PATTERN.test(frame.url),
+      (frame) => !frame.sameOrigin && is_genuine_form_provider_frame(frame.url),
     )
   ) {
     limitations.push("a recognized cross-origin form embed could not be directly inspected");
   }
   const unique_limitations = [...new Set(limitations)];
-  const coverage = unique_limitations.length > 0 ? "partial" : "complete";
-  const indirect_form_evidence = evidence.filter((record) =>
-    [
-      "recognizedFormEmbed",
-      "formLikeNetwork",
-      "contactRevealControl",
-      "rejectedForm",
-    ].includes(record.kind),
-  );
-  const strongest_indirect = strongest_evidence(indirect_form_evidence);
-
-  let assessment: FormDiscoveryOutcome["assessment"];
-  let presence_strength: PresenceEvidenceStrength;
-  if (discoveryResult.candidate) {
-    assessment = "confirmed_form_present";
-    presence_strength = "strong";
-  } else if (strongest_indirect === "strong") {
-    assessment = "strong_form_evidence";
-    presence_strength = "strong";
-  } else if (strongest_indirect === "moderate" || strongest_indirect === "weak") {
-    assessment = "possible_form_evidence";
-    presence_strength = strongest_indirect;
-  } else if (pageSignals.contactChannels.length > 0 && coverage === "complete") {
-    assessment = "contact_channel_without_form";
-    presence_strength = "none";
-  } else if (coverage === "partial") {
-    assessment = "no_form_observed_after_limited_search";
-    presence_strength = "none";
-  } else {
-    assessment = "no_form_observed_after_complete_search";
-    presence_strength = "none";
-  }
+  const base_coverage_complete = debug?.coverageAssessment
+    ? debug.coverageAssessment.completeEnoughForNoFormConclusion
+    : unique_limitations.length === 0;
+  const coverage_complete = base_coverage_complete && unique_limitations.length === 0;
+  const coverage = coverage_complete ? "complete" : "partial";
+  const decision = evaluate_discovery_evidence({
+    candidateFound: Boolean(discoveryResult.candidate),
+    contactChannelObserved: all_page_signals.contactChannels.length > 0,
+    coverageComplete: coverage_complete,
+    evidence,
+  });
+  const assessment = decision.assessment;
+  const presence_strength = decision.presenceEvidenceStrength;
 
   evidence.forEach((record, index) => {
     record.evidenceId = `evidence-${index + 1}`;
@@ -286,38 +318,44 @@ export function create_discovery_outcome(options: {
     debug.evidence = deduplicate_evidence(evidence);
     debug.limitations = unique_limitations;
     debug.strongestEvidence = strongest_evidence(evidence) ?? "none";
-    debug.assessmentRuleId = assessment_rule_id(assessment);
+    debug.assessmentRuleId = decision.ruleId;
+    debug.evidenceRulebookVersion = DISCOVERY_EVIDENCE_RULEBOOK_VERSION;
     debug.assessmentExplanation = discovery_description(
       assessment,
       discoveryResult.reason,
       discoveryResult.candidate?.frame.url() || finalUrl,
     );
-    debug.evidenceNetworkRecords = network_evidence_debug(
-      networkRecords,
-      debug.evidence,
-      debug.inspectionAttempts ?? [],
+    debug.evidenceNetworkRecords = network_result.diagnostics.map((diagnostic) => ({
+      ...diagnostic,
+      evidenceId: debug.evidence?.find((record) =>
+        record.kind === "formLikeNetwork" && safe_url(record.url ?? "") === safe_url(diagnostic.url),
+      )?.evidenceId ?? "",
+    })).slice(
+      0,
       debug.limits?.maxEvidenceNetworkRecords ?? 10,
     );
     if (debug.limits) {
-      const matching_count = debug.evidence.filter((record) => record.kind === "formLikeNetwork").length;
-      debug.limits.omittedEvidenceNetworkRecords = Math.max(0, matching_count - debug.evidenceNetworkRecords.length);
+      debug.limits.omittedEvidenceNetworkRecords = Math.max(
+        0,
+        network_result.diagnostics.length - debug.evidenceNetworkRecords.length,
+      );
     }
     if (debug.coverageAssessment) {
       debug.coverageAssessment.incompleteReasons = [
         ...new Set([...debug.coverageAssessment.incompleteReasons, ...unique_limitations]),
       ];
-      debug.coverageAssessment.completeEnoughForNoFormConclusion =
-        !discoveryResult.candidate && debug.coverageAssessment.incompleteReasons.length === 0;
+      debug.coverageAssessment.inspectionIncompleteReasons = [
+        ...new Set([
+          ...(debug.coverageAssessment.inspectionIncompleteReasons ?? debug.coverageAssessment.incompleteReasons),
+          ...unique_limitations,
+        ]),
+      ];
+      debug.coverageAssessment.incompleteReasons = debug.coverageAssessment.inspectionIncompleteReasons;
+      debug.coverageAssessment.completeEnoughForNoFormConclusion = !discoveryResult.candidate &&
+        debug.coverageAssessment.incompleteReasons.length === 0 &&
+        (debug.coverageAssessment.eligibleRoutesSkipped ?? 0) === 0;
     }
-    debug.diagnosticDisposition = discoveryResult.candidate
-      ? "confirmed_usable_form"
-      : coverage === "partial"
-        ? "inspection_incomplete"
-        : assessment === "strong_form_evidence"
-          ? "probable_missed_form"
-          : assessment === "possible_form_evidence"
-            ? "possible_missed_form"
-            : "complete_no_usable_form_observed";
+    debug.diagnosticDisposition = decision.disposition;
     for (const record of debug.evidence) {
       const inspection = debug.inspectionAttempts?.find((item) => item.inspectionId === record.inspectionId);
       if (inspection && record.evidenceId && !inspection.evidenceIds.includes(record.evidenceId)) {
@@ -361,33 +399,6 @@ function assessment_rule_id(assessment: FormDiscoveryOutcome["assessment"]): str
   }
 }
 
-function network_evidence_debug(
-  records: NetworkDebugRecord[],
-  evidence: DiscoveryEvidenceRecord[],
-  inspections: DiscoveryInspectionAttemptDebug[],
-  limit: number,
-): DiscoveryNetworkEvidenceDebug[] {
-  const form_evidence = evidence.filter((record) => record.kind === "formLikeNetwork" && record.url);
-  return form_evidence.slice(0, limit).flatMap((record) => {
-    const source = records.find((candidate) => safe_url(candidate.url) === safe_url(record.url ?? ""));
-    if (!source || source.status === undefined) return [];
-    const inspection = inspections.find((candidate) =>
-      source.startedAt >= candidate.readiness.startedAt && source.startedAt <= candidate.readiness.finishedAt,
-    );
-    return [{
-      evidenceId: record.evidenceId ?? "",
-      ...(inspection ? { inspectionId: inspection.inspectionId } : {}),
-      url: safe_url(source.url),
-      resourceType: source.resourceType,
-      status: source.status,
-      providerMatched: FORM_PROVIDER_PATTERN.test(source.url),
-      correlationReason: inspection ? "request occurred during inspection readiness window" : "matched accumulated discovery network evidence",
-      strength: record.strength,
-      ruleId: FORM_PROVIDER_PATTERN.test(source.url) ? "DISCOVERY-NETWORK-PROVIDER" : "DISCOVERY-NETWORK-SEMANTIC",
-    }];
-  });
-}
-
 export function create_blocked_discovery_outcome(
   website_url: string,
   description: string,
@@ -414,51 +425,126 @@ export function create_blocked_discovery_outcome(
 
 function network_form_evidence(
   records: NetworkDebugRecord[],
-  signals: DiscoveryPageSignals,
-  interactions: Array<{ performedAt: string }>,
-): DiscoveryEvidenceRecord[] {
+  inspections: DiscoveryInspectionAttemptDebug[],
+  candidates: DiscoveryFormCandidateDebug[],
+  interactions: Array<{ performedAt: string; pageStateChanged?: boolean }>,
+): { evidence: DiscoveryEvidenceRecord[]; diagnostics: DiscoveryNetworkEvidenceDebug[] } {
   const evidence: DiscoveryEvidenceRecord[] = [];
+  const diagnostics: DiscoveryNetworkEvidenceDebug[] = [];
   for (const record of records) {
-    const searchable = `${record.url} ${record.postDataPreview ?? ""}`;
-    if (ANALYTICS_PATTERN.test(searchable)) continue;
-    const provider = FORM_PROVIDER_PATTERN.test(searchable);
-    const form_like = provider || FORM_RESOURCE_PATTERN.test(searchable);
-    const status = record.status;
-    const successful = status !== undefined && status >= 200 && status < 400;
-    const semantic_data_request = ["xhr", "fetch"].includes(record.resourceType);
-    if (!form_like || !successful || (!provider && !semantic_data_request)) continue;
+    if (record.status === undefined) continue;
+    const classified = classify_discovery_network_record(record);
+    const legacy_semantic_match = FORM_RESOURCE_PATTERN.test(`${record.url} ${record.postDataPreview ?? ""}`);
+    if (classified.classification === "unknown" && !legacy_semantic_match) continue;
+    const inspection = inspection_for_network_record(record, inspections);
+    // An unscoped request must stay network-only. Never lend it structural
+    // evidence from whichever page happened to be final.
+    const signals = inspection?.pageSignals ?? {
+      contactContext: false,
+      contactChannels: [],
+      recognizedFormEmbeds: [],
+      providerResources: [],
+      contactRevealControls: [],
+    };
     const request_started_at = Date.parse(record.startedAt);
     const correlated = interactions.some((interaction) => {
       const interaction_started_at = Date.parse(interaction.performedAt);
-      return (
+      return interaction.pageStateChanged === true &&
         !Number.isNaN(request_started_at) &&
         !Number.isNaN(interaction_started_at) &&
         request_started_at >= interaction_started_at &&
-        request_started_at <= interaction_started_at + 30_000
-      );
+        request_started_at <= interaction_started_at + 30_000;
     });
+    const structural = genuine_form_provider_frames(signals).length > 0 || candidates.some((candidate) =>
+      candidate.inspectionId === inspection?.inspectionId &&
+      (candidate.accepted || credible_rejected_candidate(candidate)),
+    );
+    const successful = record.status >= 200 && record.status < 400;
+    const credible = classified.classification === "confirmed_form_endpoint" && successful && structural;
+    const rule_id = classified.classification === "unknown" && legacy_semantic_match
+      ? "DISCOVERY-NETWORK-IGNORED-SEMANTIC-ONLY"
+      : classified.ruleId;
+    const ignored_reason = credible
+      ? undefined
+      : classified.ignoredReason ?? "network-only evidence has no independent structural form signal";
 
-    let strength: DiscoveryEvidenceRecord["strength"] = "weak";
-    if (
-      signals.contactContext &&
-      ((provider && (correlated || signals.recognizedFormEmbeds.length > 0)) ||
-        (semantic_data_request && correlated))
-    ) {
-      strength = "strong";
+    if (credible) {
+      evidence.push({
+        ...(inspection ? { inspectionId: inspection.inspectionId } : {}),
+        kind: "formLikeNetwork",
+        strength: correlated && signals.contactContext ? "strong" : "moderate",
+        description: "a form-specific endpoint appeared with independent structural form evidence",
+        url: safe_url(record.url),
+        status: record.status,
+        provider: classified.provider,
+        networkClassification: classified.classification,
+      });
     }
-    else if (signals.contactContext || provider) strength = "moderate";
-    evidence.push({
-      kind: "formLikeNetwork",
-      strength,
-      description:
-        strength === "strong"
-          ? "successful recognized form-provider request appeared with independent contact context"
-          : "successful form-like network request appeared but did not independently prove a form",
+    diagnostics.push({
+      evidenceId: "",
+      ...(inspection ? { inspectionId: inspection.inspectionId } : {}),
       url: safe_url(record.url),
-      status: status as number,
+      resourceType: record.resourceType,
+      status: record.status,
+      providerMatched: Boolean(classified.provider),
+      correlationReason: credible
+        ? "request was scoped to an inspection with independent structural form evidence"
+        : "request was retained for audit but did not independently establish form presence",
+      strength: credible ? (correlated && signals.contactContext ? "strong" : "moderate") : "weak",
+      ruleId: rule_id,
+      classification: classified.classification,
+      ...(classified.provider ? { provider: classified.provider } : {}),
+      ...(ignored_reason ? { ignoredReason: ignored_reason } : {}),
     });
   }
-  return evidence.slice(0, 10);
+  return { evidence: deduplicate_evidence(evidence), diagnostics };
+}
+
+function inspection_for_network_record(
+  record: NetworkDebugRecord,
+  inspections: DiscoveryInspectionAttemptDebug[],
+): DiscoveryInspectionAttemptDebug | undefined {
+  const by_id = inspections.find((inspection) =>
+    inspection.networkRecordStartId !== undefined &&
+    inspection.networkRecordEndId !== undefined &&
+    record.id >= inspection.networkRecordStartId &&
+    record.id <= inspection.networkRecordEndId,
+  );
+  if (by_id) return by_id;
+  return inspections.find((inspection) =>
+    record.startedAt >= inspection.readiness.startedAt && record.startedAt <= inspection.readiness.finishedAt,
+  );
+}
+
+function credible_rejected_candidate(candidate: DiscoveryFormCandidateDebug): boolean {
+  return !candidate.signals.hasNegativeContext &&
+    candidate.signals.hasMessage &&
+    (candidate.signals.hasEmail || candidate.signals.hasPhone || candidate.signals.hasContactContext) &&
+    /could not be inspected|no visible submit|no visible email|sufficient contact shape|message field/i.test(
+      candidate.reason,
+    );
+}
+
+function merge_page_signals(signals: DiscoveryPageSignals[]): DiscoveryPageSignals {
+  return {
+    contactContext: signals.some((entry) => entry.contactContext),
+    contactChannels: [...new Set(signals.flatMap((entry) => entry.contactChannels))],
+    recognizedFormEmbeds: [...new Set(signals.flatMap((entry) => entry.recognizedFormEmbeds))],
+    providerResources: deduplicate_provider_resources(signals.flatMap((entry) => entry.providerResources ?? [])),
+    contactRevealControls: [...new Set(signals.flatMap((entry) => entry.contactRevealControls))],
+  };
+}
+
+function deduplicate_provider_resources(
+  resources: DiscoveryProviderResource[],
+): DiscoveryProviderResource[] {
+  const seen = new Set<string>();
+  return resources.filter((resource) => {
+    const key = `${resource.source}|${resource.role}|${safe_url(resource.url)}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function strongest_evidence(

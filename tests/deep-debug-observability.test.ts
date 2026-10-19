@@ -225,7 +225,7 @@ test("deep-debug recorder and workflow artifacts", async (context) => {
     );
   });
 
-  await context.test("retains bounded schema-v2 evidence for discovery failures", async () => {
+  await context.test("retains bounded schema-v3 evidence for discovery failures", async () => {
     const discovery = await run_deep_debug("/no-form", "no-form");
     assert.equal(discovery.status, "FAILED", JSON.stringify(discovery));
     await assert_image_artifacts(
@@ -241,20 +241,35 @@ test("deep-debug recorder and workflow artifacts", async (context) => {
         inspectionAttempts: Array<{
           inspectionId: string; phase: string; pageQuality: string;
           candidateIds: string[]; evidenceIds: string[]; contextExcerpt: string;
+          networkRecordStartId: number; networkRecordEndId: number;
         }>;
         diagnosticDisposition: string;
         assessmentRuleId: string;
-        coverageAssessment: { completeEnoughForNoFormConclusion: boolean };
+        evidenceRulebookVersion: string;
+        discoveredRoutes: Array<{ url: string; score: number; eligible: boolean }>;
+        coverageAssessment: {
+          completeEnoughForNoFormConclusion: boolean;
+          inspectionIncompleteReasons: string[];
+          diagnosticTruncationReasons: string[];
+        };
         limits: { maxInspections: number; maxScreenshots: number };
       };
     };
-    assert.equal(debug.version, 2);
+    assert.equal(debug.version, 3);
     assert.ok(debug.summary.inspectionAttempts.length >= 1);
     assert.equal(debug.summary.inspectionAttempts[0]?.inspectionId, "inspection-1");
     assert.ok((debug.summary.inspectionAttempts[0]?.contextExcerpt.length ?? 501) <= 500);
+    assert.ok(debug.summary.inspectionAttempts.every((inspection) =>
+      Number.isInteger(inspection.networkRecordStartId) &&
+      Number.isInteger(inspection.networkRecordEndId)
+    ));
     assert.equal(debug.summary.diagnosticDisposition, "complete_no_usable_form_observed");
     assert.equal(debug.summary.assessmentRuleId, "DISCOVERY-EVIDENCE-COMPLETE-NO-FORM");
+    assert.equal(debug.summary.evidenceRulebookVersion, "2.0.0");
+    assert.ok(Array.isArray(debug.summary.discoveredRoutes));
     assert.equal(debug.summary.coverageAssessment.completeEnoughForNoFormConclusion, true);
+    assert.deepEqual(debug.summary.coverageAssessment.inspectionIncompleteReasons, []);
+    assert.ok(Array.isArray(debug.summary.coverageAssessment.diagnosticTruncationReasons));
     assert.equal(debug.summary.limits.maxInspections, 8);
     assert.equal(debug.summary.limits.maxScreenshots, 4);
   });

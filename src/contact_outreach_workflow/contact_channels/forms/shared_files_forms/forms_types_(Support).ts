@@ -292,6 +292,13 @@ export interface DiscoveryRouteAttemptDebug {
   reason?: string;
 }
 
+export interface DiscoveryRouteCandidateDebug {
+  url: string;
+  label: string;
+  score: number;
+  eligible: boolean;
+}
+
 export type DiscoveryInspectionPhase =
   | "initial"
   | "rankedRoute"
@@ -342,6 +349,8 @@ export interface DiscoveryInspectionAttemptDebug {
   evidenceIds: string[];
   screenshotPath?: string;
   stateFingerprint: string;
+  networkRecordStartId?: number;
+  networkRecordEndId?: number;
 }
 
 export interface DiscoveryCoverageAssessment {
@@ -355,6 +364,12 @@ export interface DiscoveryCoverageAssessment {
   revealControlsExercised: number;
   incompleteReasons: string[];
   completeEnoughForNoFormConclusion: boolean;
+  eligibleRoutesDiscovered?: number;
+  eligibleRoutesAttempted?: number;
+  eligibleRoutesSkipped?: number;
+  highestSkippedRouteScore?: number;
+  inspectionIncompleteReasons?: string[];
+  diagnosticTruncationReasons?: string[];
 }
 
 export type DiscoveryDiagnosticDisposition =
@@ -401,6 +416,7 @@ export interface DiscoveryDebugSummary {
   finalUrl: string;
   finalClassification: string;
   attemptedRoutes: DiscoveryRouteAttemptDebug[];
+  discoveredRoutes?: DiscoveryRouteCandidateDebug[];
   candidates: DiscoveryFormCandidateDebug[];
   aiActions: DiscoveryAiActionDebug[];
   frames: DiscoveryFrameDebug[];
@@ -415,6 +431,7 @@ export interface DiscoveryDebugSummary {
   coverageAssessment?: DiscoveryCoverageAssessment;
   diagnosticDisposition?: DiscoveryDiagnosticDisposition;
   limits?: DiscoveryDiagnosticLimits;
+  evidenceRulebookVersion?: string;
 }
 
 export interface DiscoveryInteractionState {
@@ -435,6 +452,7 @@ export interface DiscoveryInteractionDebug {
 export type DiscoveryEvidenceKind =
   | "validatedContactForm"
   | "recognizedFormEmbed"
+  | "providerResource"
   | "formLikeNetwork"
   | "contactRoute"
   | "contactRevealControl"
@@ -451,6 +469,32 @@ export interface DiscoveryEvidenceRecord {
   description: string;
   url?: string;
   status?: number;
+  provider?: string;
+  providerRole?: DiscoveryProviderResourceRole;
+  networkClassification?: DiscoveryNetworkClassification;
+  ignoredReason?: string;
+}
+
+export type DiscoveryNetworkClassification =
+  | "confirmed_form_endpoint"
+  | "provider_resource"
+  | "unrelated_telemetry"
+  | "unknown";
+
+export type DiscoveryProviderResourceRole =
+  | "form_frame"
+  | "chat_frame"
+  | "booking_frame"
+  | "provider_script"
+  | "analytics_script"
+  | "unknown_provider_resource";
+
+export interface DiscoveryProviderResource {
+  url: string;
+  provider: string;
+  role: DiscoveryProviderResourceRole;
+  source: "iframe" | "script" | "frame";
+  visible: boolean;
 }
 
 export interface DiscoveryNetworkEvidenceDebug {
@@ -463,12 +507,16 @@ export interface DiscoveryNetworkEvidenceDebug {
   correlationReason: string;
   strength: Exclude<PresenceEvidenceStrength, "none">;
   ruleId: string;
+  classification?: DiscoveryNetworkClassification;
+  provider?: string;
+  ignoredReason?: string;
 }
 
 export interface DiscoveryPageSignals {
   contactContext: boolean;
   contactChannels: Array<"email" | "telephone" | "chat" | "support" | "externalBooking">;
   recognizedFormEmbeds: string[];
+  providerResources?: DiscoveryProviderResource[];
   contactRevealControls: string[];
 }
 

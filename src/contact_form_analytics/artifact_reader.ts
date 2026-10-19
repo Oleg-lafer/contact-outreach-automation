@@ -9,6 +9,7 @@ import type {
   DiscoveryChannelEvidence,
   DiscoveryChannelName,
   DiscoveryObservabilityEvidence,
+  DiscoveryReassessmentEvidence,
   FormConfirmationEvidence,
   FormArithmeticSignalEvidence,
   FormMessageSignalEvidence,
@@ -19,6 +20,15 @@ import type {
   SiteWorkflowMode,
   WorkflowMode,
 } from "./analytics_types.js";
+import { FORM_DISCOVERY_EVIDENCE_RULEBOOK_VERSION } from "./analytics_types.js";
+import {
+  evaluate_discovery_evidence,
+  is_genuine_form_provider_frame,
+} from "../contact_outreach_workflow/contact_channels/forms/shared_files_forms/discovery_evidence_rules_(Deterministic).js";
+import type {
+  DiscoveryDiagnosticDisposition as WorkflowDiscoveryDiagnosticDisposition,
+  DiscoveryEvidenceRecord,
+} from "../contact_outreach_workflow/contact_channels/forms/shared_files_forms/forms_types_(Support).js";
 
 const MAX_TEXT_BYTES = 1_000_000;
 const DEBUG_FILES = ["discovery-debug.json", "submission-debug.json", "missing-fields.json", "network.json"];
@@ -472,6 +482,146 @@ const findUniqueDiscoveryDebugArtifact = async (siteDirectory: string): Promise<
   return candidates.length === 1 ? candidates[0] : undefined;
 };
 
+const LEGACY_MESSAGE_CONTROL = /message|comments?|inquir|enquir|details|description|questions?|tell us|how can we help|project brief|requirements?|notes?|הודעה|תוכן הפנייה|תוכן הפניה|פרטי הפנייה|פרטי הפניה|פרטים נוספים|איך נוכל לעזור|כיצד נוכל לעזור|הערות|שאלות/iu;
+
+const legacyCandidateHasCredibleFormShape = (candidate: JsonObject): boolean => {
+  if (candidate.accepted === true) return true;
+  const score = typeof candidate.score === "number" && Number.isFinite(candidate.score)
+    ? candidate.score
+    : Number.NEGATIVE_INFINITY;
+  const controls = Array.isArray(candidate.controls) ? candidate.controls.filter(isObject) : [];
+  const has_message = controls.some((control) => {
+    const tag = stringValue(control.tagName).toLowerCase();
+    const type = stringValue(control.type).toLowerCase();
+    if (tag === "textarea" || type === "textarea") return true;
+    if (tag !== "input" || !["", "text"].includes(type)) return false;
+    return LEGACY_MESSAGE_CONTROL.test(
+      `${stringValue(control.name)} ${stringValue(control.label)} ${stringValue(control.placeholder)}`,
+    );
+  });
+  const no_submit = /NO-SUBMIT/.test(stringValue(candidate.ruleId)) ||
+    /no visible submit/i.test(stringValue(candidate.reason));
+  // In v2 a rejected-form evidence record was emitted only for the best
+  // contact-like shape. Score six is the first structural tier (for example
+  // a genuine message control); score four is page context alone.
+  return score >= 6 || (has_message && no_submit);
+};
+
+const reassessDiscoveryArtifact = (
+  raw: JsonObject,
+  recordedAssessment: string,
+  recordedDisposition: WorkflowDiscoveryDiagnosticDisposition,
+): DiscoveryReassessmentEvidence => {
+  const version = Number(raw.version);
+  const summary = isObject(raw.summary) ? raw.summary : {};
+  const unchanged = (ruleId: string, reasons: string[] = []): DiscoveryReassessmentEvidence => ({
+    version: FORM_DISCOVERY_EVIDENCE_RULEBOOK_VERSION,
+    sourceSchemaVersion: version,
+    recordedAssessment,
+    effectiveAssessment: recordedAssessment,
+    recordedDisposition,
+    effectiveDisposition: recordedDisposition,
+    changed: false,
+    confidence: "unchanged",
+    ruleId,
+    reasons,
+    ignoredEvidenceRuleIds: [],
+  });
+
+  if (version >= 3) {
+    return unchanged(
+      stringValue(summary.assessmentRuleId) || "DISCOVERY-REASSESSMENT-V3-RUNTIME",
+      ["The artifact already uses the corrected runtime evidence rulebook."],
+    );
+  }
+  if (version !== 2 || !["strong_form_evidence", "possible_form_evidence"].includes(recordedAssessment)) {
+    return unchanged("DISCOVERY-REASSESSMENT-NOT-ELIGIBLE");
+  }
+
+  const coverage = isObject(summary.coverageAssessment) ? summary.coverageAssessment : {};
+  const routes_skipped = numberValue(coverage.routesSkipped) ?? Number.POSITIVE_INFINITY;
+  const incomplete_reasons = Array.isArray(coverage.incompleteReasons)
+    ? coverage.incompleteReasons.map(stringValue).filter(Boolean) : [];
+  const material_incomplete = incomplete_reasons.filter((reason) =>
+    !/candidate limit reached|candidate diagnostics truncated|control diagnostics truncated|network evidence diagnostics truncated|screenshot diagnostics truncated/i.test(reason),
+  );
+  const inspections = Array.isArray(summary.inspectionAttempts) ? summary.inspectionAttempts.filter(isObject) : [];
+  const inspections_usable = inspections.length > 0 && inspections.every((inspection) =>
+    stringValue(inspection.pageQuality) === "usable" &&
+    !["http_error", "timed_out", "navigation_failed"].includes(stringValue(inspection.navigationOutcome)),
+  );
+  const routes = Array.isArray(summary.attemptedRoutes) ? summary.attemptedRoutes.filter(isObject) : [];
+  const route_failure = routes.some((route) =>
+    ["http_error", "timed_out", "navigation_failed", "blocked"].includes(stringValue(route.diagnosticResult)),
+  );
+  const frames = Array.isArray(summary.frames) ? summary.frames.filter(isObject) : [];
+  const genuine_form_frame = frames.some((frame) => is_genuine_form_provider_frame(stringValue(frame.url)));
+  const candidates = Array.isArray(summary.candidates) ? summary.candidates.filter(isObject) : [];
+  const evidence = Array.isArray(summary.evidence) ? summary.evidence.filter(isObject) : [];
+  const has_rejected_form_evidence = evidence.some((record) => stringValue(record.kind) === "rejectedForm");
+  const credible_candidate = has_rejected_form_evidence &&
+    candidates.some(legacyCandidateHasCredibleFormShape);
+  const interactions = Array.isArray(summary.interactions) ? summary.interactions.filter(isObject) : [];
+  const changed_reveal = interactions.some((interaction) => interaction.pageStateChanged === true);
+  const network = Array.isArray(summary.evidenceNetworkRecords)
+    ? summary.evidenceNetworkRecords.filter(isObject) : [];
+  const ignored_network_rules = network.filter((record) =>
+    stringValue(record.ruleId) === "DISCOVERY-NETWORK-SEMANTIC" && record.providerMatched !== true,
+  ).map((record) => stringValue(record.ruleId));
+  const credible_provider_network = network.some((record) =>
+    record.providerMatched === true || /PROVIDER/.test(stringValue(record.ruleId)),
+  );
+  const unsupported_evidence = evidence.some((record) => {
+    const kind = stringValue(record.kind);
+    if (["contactRoute", "contactChannel", "providerResource", "inspectionLimitation"].includes(kind)) return false;
+    if (kind === "formLikeNetwork") return credible_provider_network;
+    if (kind === "recognizedFormEmbed") return genuine_form_frame;
+    if (kind === "contactRevealControl") return changed_reveal;
+    if (kind === "rejectedForm") return credible_candidate;
+    return kind === "validatedContactForm";
+  });
+
+  const reasons: string[] = [];
+  if (coverage.completeEnoughForNoFormConclusion !== true) reasons.push("recorded coverage was not complete");
+  if (routes_skipped !== 0) reasons.push("legacy artifact skipped one or more routes");
+  if (!inspections_usable) reasons.push("one or more inspections were not usable");
+  if (material_incomplete.length > 0 || route_failure) reasons.push("material inspection failure remained");
+  if (genuine_form_frame) reasons.push("a genuine provider form frame remained unresolved");
+  if (credible_candidate) reasons.push("a corrected high-quality form candidate remained unresolved");
+  if (unsupported_evidence) reasons.push("credible indirect form evidence remained");
+  if (reasons.length > 0) {
+    return unchanged("DISCOVERY-REASSESSMENT-CONSERVATIVE-RETAINED", reasons);
+  }
+
+  const contact_channel_observed = inspections.some((inspection) => {
+    const page_signals = isObject(inspection.pageSignals) ? inspection.pageSignals : {};
+    return Array.isArray(page_signals.contactChannels) && page_signals.contactChannels.length > 0;
+  });
+  const decision = evaluate_discovery_evidence({
+    candidateFound: false,
+    contactChannelObserved: contact_channel_observed,
+    coverageComplete: true,
+    evidence: [] as DiscoveryEvidenceRecord[],
+  });
+  return {
+    version: FORM_DISCOVERY_EVIDENCE_RULEBOOK_VERSION,
+    sourceSchemaVersion: version,
+    recordedAssessment,
+    effectiveAssessment: decision.assessment,
+    recordedDisposition,
+    effectiveDisposition: decision.disposition,
+    changed: decision.assessment !== recordedAssessment,
+    confidence: "high",
+    ruleId: "DISCOVERY-REASSESSMENT-V2-CONSERVATIVE-NO-FORM",
+    reasons: [
+      "All recorded inspections were usable and complete.",
+      "No routes were skipped in the legacy artifact.",
+      "Only generic resource or semantic-network noise remained after corrected evidence rules.",
+    ],
+    ignoredEvidenceRuleIds: [...new Set(ignored_network_rules)],
+  };
+};
+
 const parseDiscoveryObservability = (
   raw: unknown,
   artifactPath: string,
@@ -505,11 +655,16 @@ const parseDiscoveryObservability = (
   if (!["confirmed_usable_form", "probable_missed_form", "possible_missed_form", "complete_no_usable_form_observed", "inspection_incomplete"].includes(disposition)) {
     return undefined;
   }
+  const reassessment = reassessDiscoveryArtifact(
+    raw,
+    discoveryAssessment,
+    disposition as WorkflowDiscoveryDiagnosticDisposition,
+  );
   return {
     schemaVersion: Number(raw.version),
     artifactPath,
-    disposition: disposition as DiscoveryObservabilityEvidence["disposition"],
-    assessmentRuleId: stringValue(summary.assessmentRuleId),
+    disposition: reassessment.effectiveDisposition,
+    assessmentRuleId: reassessment.changed ? reassessment.ruleId : stringValue(summary.assessmentRuleId),
     inspectionIds: inspections.map((item) => stringValue(item.inspectionId)).filter(Boolean),
     candidateIds: candidates.map((item) => stringValue(item.candidateId)).filter(Boolean),
     evidenceIds: evidence.map((item) => stringValue(item.evidenceId)).filter(Boolean),
@@ -519,6 +674,7 @@ const parseDiscoveryObservability = (
     candidateRuleIds: candidates.map((item) => stringValue(item.ruleId)).filter(Boolean),
     incompleteReasons,
     contradictions: [...new Set(contradictions)],
+    reassessment,
   };
 };
 
@@ -1122,6 +1278,9 @@ const readSite = async (runPath: string, directoryName: string): Promise<SiteEvi
     errors.push(makeError(directoryName, "warning", "missing_website_url", "No website URL was found in site artifacts.", directory));
   }
 
+  const discoveryReassessment = discoveryObservability?.reassessment;
+  const effectiveDiscoveryAssessment = discoveryReassessment?.effectiveAssessment || discoveryAssessment;
+
   const hasPrimary = Boolean(outreachPath || productionPath || discoveryJsonPath || discoveryTextPath);
   if (!hasPrimary && !inputMalformed) {
     errors.push(
@@ -1152,7 +1311,8 @@ const readSite = async (runPath: string, directoryName: string): Promise<SiteEvi
     status,
     reason: inputMalformed ? "Input JSON is malformed and no reliable input could be read." : reason,
     failureKind,
-    discoveryAssessment,
+    discoveryAssessment: effectiveDiscoveryAssessment,
+    ...(discoveryReassessment ? { discoveryReassessment } : {}),
     presenceEvidenceStrength,
     searchCoverage,
     description,

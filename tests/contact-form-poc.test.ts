@@ -116,6 +116,24 @@ test("contact-form workflow scenarios", async (context) => {
     ]);
   });
 
+  await context.test("discovers forms with external and image submit controls", async () => {
+    const external = await run_for_path("/external-discovery-submit");
+    assert.equal(external.formFound, true, JSON.stringify(external));
+    assert.equal(external.discovery?.assessment, "confirmed_form_present");
+
+    const image = await run_for_path("/image-submit");
+    assert.equal(image.formFound, true, JSON.stringify(image));
+    assert.equal(image.discovery?.assessment, "confirmed_form_present");
+  });
+
+  await context.test("does not mistake search or page-feedback controls for a message field", async () => {
+    for (const fixturePath of ["/search-only-contact-page", "/page-feedback-widget"]) {
+      const outcome = await run_for_path(fixturePath);
+      assert.equal(outcome.formFound, false, `${fixturePath}: ${JSON.stringify(outcome)}`);
+      assert.notEqual(outcome.discovery?.assessment, "confirmed_form_present");
+    }
+  });
+
   await context.test("submits forms whose submit control is an anchor", async () => {
     const outcome = await run_for_path("/anchor-submit");
 
@@ -257,7 +275,7 @@ test("contact-form workflow scenarios", async (context) => {
     const outcome = await run_for_path("/complete-outranks-progression");
 
     assert.equal(outcome.status, "SUCCESS", JSON.stringify(outcome));
-    assert.deepEqual(outcome.populatedFields, ["message"]);
+    assert.deepEqual(outcome.populatedFields, ["email", "message"]);
   });
 
   await context.test("advances a one-step contact form to its message field", async () => {
@@ -751,10 +769,10 @@ test("contact-form workflow scenarios", async (context) => {
 
   await context.test("reports contradictory positive and rejection evidence separately", async () => {
     const outcome = await run_for_path("/round3-contradictory");
-    assert.equal(outcome.status, "INCONCLUSIVE", JSON.stringify(outcome));
+    assert.equal(outcome.status, "FAILED", JSON.stringify(outcome));
     assert.equal(outcome.submissionAttempted, true);
     assert.equal(outcome.submissionConfirmed, false);
-    assert.equal(outcome.failureKind, "submission.inconclusive");
+    assert.equal(outcome.failureKind, "submission.contradictory");
     assert.equal(outcome.postClickDisposition, "contradictory");
     assert.equal(outcome.confirmationEvidence, "network");
     assert.equal(outcome.rejectionEvidence?.length, 1);
@@ -1877,6 +1895,24 @@ function page_for_path(path: string): string {
         </script>`);
     case "/search-widget-contact":
       return html(search_widget_contact_form());
+    case "/external-discovery-submit":
+      return html(`
+        <section><h1>Contact us</h1>
+          <form id="external-contact"><input name="name"><input type="email" name="email"><textarea name="message"></textarea></form>
+          <button id="external-send">Send message</button>
+        </section>
+        <div id="result"></div>
+        <script>document.querySelector('#external-send').onclick = () => { document.querySelector('#result').textContent = 'Thank you. Your message has been sent.'; };</script>`);
+    case "/image-submit":
+      return html(`
+        <form><h1>Contact us</h1><input name="name"><input type="email" name="email"><textarea name="message"></textarea>
+          <input type="image" aria-label="Send message" style="width:32px;height:32px">
+        </form><div id="result"></div>
+        <script>document.querySelector('form').onsubmit = event => { event.preventDefault(); document.querySelector('#result').textContent = 'Thank you. Your message has been sent.'; };</script>`);
+    case "/search-only-contact-page":
+      return html(`<main><h1>Contact support</h1><p>How can we help?</p><form><input type="search" placeholder="How can we help?"><button>Search</button></form></main>`);
+    case "/page-feedback-widget":
+      return html(`<main><h1>Contact</h1><p>Tell us how we can help.</p><form><label><input type="radio" name="rating">Good</label><button>Send feedback</button></form></main>`);
     case "/anchor-submit":
       return html(anchor_submit_contact_form());
     case "/wrapped-native-form":

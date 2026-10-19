@@ -22,6 +22,9 @@ import {
   renderSignalDashboardHtml,
   renderSignalDashboardPng,
 } from "./signal_dashboard.js";
+import {
+  renderBrowserDiscoverySignalsHtml,
+} from "./browser_discovery_signal_dashboard.js";
 
 type OutputFile = string | Buffer;
 type OutputFiles = Record<string, OutputFile>;
@@ -98,8 +101,9 @@ const renderTextReport = (result: AnalyticsResult, includeSiteLists: boolean): s
   lines.push(
     "",
     "DISCOVERY OBSERVABILITY",
-    `Schema-v2 evidence available: ${observability.availableSites.count}`,
-    `Legacy/no schema-v2 evidence: ${observability.legacySites.count}`,
+    `Structured Discovery evidence available: ${observability.availableSites.count}`,
+    `Legacy/no structured Discovery evidence: ${observability.legacySites.count}`,
+    `Conservatively reassessed outcomes: ${result.sites.filter((site) => site.discoveryReassessment?.changed).length}`,
   );
   for (const [disposition, group] of Object.entries(observability.dispositions)) {
     lines.push(`${disposition}: ${group.count}`);
@@ -145,6 +149,53 @@ const discoveryObservabilitySiteCsv = (result: AnalyticsResult): string => csv(
   ]),
 );
 
+const discoveryReassessmentSiteCsv = (result: AnalyticsResult): string => {
+  const artifact_paths = new Map(
+    result.discoveryObservability.sites.map((site) => [site.siteId, site.artifactPath] as const),
+  );
+  return csv(
+    [
+      "site_id", "website_url", "source_schema_version", "changed", "confidence", "rule_id",
+      "recorded_assessment", "effective_assessment", "recorded_disposition", "effective_disposition",
+      "reasons", "ignored_evidence_rule_ids", "artifact_path",
+    ],
+    result.sites.filter((site) => site.discoveryReassessment).map((site) => {
+      const reassessment = site.discoveryReassessment!;
+      return [
+        site.id, site.websiteUrl, reassessment.sourceSchemaVersion, reassessment.changed,
+        reassessment.confidence, reassessment.ruleId, reassessment.recordedAssessment,
+        reassessment.effectiveAssessment, reassessment.recordedDisposition,
+        reassessment.effectiveDisposition, reassessment.reasons,
+        reassessment.ignoredEvidenceRuleIds, artifact_paths.get(site.id) ?? "",
+      ];
+    }),
+  );
+};
+
+interface MermaidStoppedCategory {
+  title: string;
+  explanation: string;
+  count: number;
+  automationRelated?: boolean;
+}
+
+const renderMermaidStoppedCategory = (category: MermaidStoppedCategory): string => {
+  const content = `<b>${category.title}: ${category.count}</b><br/>${category.explanation}`;
+  return category.automationRelated
+    ? `<span style='color:#dc2626 !important;font-weight:700'>${content}</span>`
+    : content;
+};
+
+const renderMermaidStoppedNode = (
+  title: string,
+  total: number,
+  categories: MermaidStoppedCategory[],
+): string => [
+  title,
+  `<b>${total}</b>`,
+  ...categories.filter((category) => category.count > 0).map(renderMermaidStoppedCategory),
+].join("<br/><br/>");
+
 const renderMermaidDefinition = (result: AnalyticsResult): string => {
   const stage = (name: StageStatistics["stage"]): StageStatistics => {
     const found = result.stages.find((candidate) => candidate.stage === name);
@@ -160,30 +211,101 @@ const renderMermaidDefinition = (result: AnalyticsResult): string => {
   const counts = result.counts;
   const planned = counts.planned ?? counts.processed;
   const notStarted = counts.notStarted ?? 0;
+  const inputStopped = renderMermaidStoppedNode("Stopped at input", input.stopped, [
+    {
+      title: "Automation-related input issue",
+      explanation: "The automation could not validate or process the required input.",
+      count: input.attribution.workflow_attributable.count,
+      automationRelated: true,
+    },
+  ]);
+  const browserStopped = renderMermaidStoppedNode("Stopped at browser", browser.stopped, [
+    {
+      title: "Automation-related loading issue",
+      explanation: "Strong evidence indicates that an automation-related issue prevented the website from loading.",
+      count: browser.attribution.workflow_attributable.count,
+      automationRelated: true,
+    },
+    {
+      title: "Link or website is broken",
+      explanation: "Strong evidence indicates that the link or destination website is broken or unavailable.",
+      count: browser.attribution.non_workflow_attributable.count,
+    },
+    {
+      title: "Unable to determine the cause",
+      explanation: "The evidence could not distinguish an automation issue from a broken or unavailable destination.",
+      count: browser.attribution.indeterminate.count,
+    },
+  ]);
+  const discoveryStopped = renderMermaidStoppedNode("Stopped at discovery", discovery.stopped, [
+    {
+      title: "Automation-related discovery issue",
+      explanation: "Strong evidence indicates that the automation could not reliably inspect or identify a suitable form.",
+      count: discovery.attribution.workflow_attributable.count,
+      automationRelated: true,
+    },
+    {
+      title: "No suitable contact form is available",
+      explanation: "Strong evidence indicates that the website does not provide a usable contact form for this type of outreach.",
+      count: discovery.attribution.non_workflow_attributable.count,
+    },
+    {
+      title: "Unable to determine whether a suitable form exists",
+      explanation: "The evidence could not determine whether no suitable form exists or the automation failed to locate it.",
+      count: discovery.attribution.indeterminate.count,
+    },
+  ]);
+  const populationStopped = renderMermaidStoppedNode("Stopped at population", population.stopped, [
+    {
+      title: "The form could not be completed automatically",
+      explanation: "The automation was unable to populate or safely complete one or more required fields.",
+      count: population.attribution.workflow_attributable.count,
+      automationRelated: true,
+    },
+  ]);
+  const submissionStopped = renderMermaidStoppedNode("Submission not confirmed", submission.stopped, [
+    {
+      title: "The automation could not complete or verify the submission",
+      explanation: "An automation-related issue prevented completion or reliable verification.",
+      count: submission.attribution.workflow_attributable.count,
+      automationRelated: true,
+    },
+    {
+      title: "The website prevented or rejected the submission",
+      explanation: "Strong evidence indicates that the website or an external service blocked, rejected, or prevented confirmation.",
+      count: submission.attribution.non_workflow_attributable.count,
+    },
+    {
+      title: "Unable to determine the submission outcome",
+      explanation: "A submission was attempted, but the evidence could not establish whether it succeeded or failed.",
+      count: submission.attribution.indeterminate.count,
+    },
+  ]);
 
   return [
+    "%%{init: {\"flowchart\": {\"wrappingWidth\": 600}}}%%",
     "flowchart TD",
     `  PLAN[\"Planned sites<br/><b>${planned}</b>\"]`,
     `  PLAN -->|Run started: ${counts.processed}| INPUT[\"Input stage<br/>Entered: ${input.entered}\"]`,
     `  PLAN -->|Run not started: ${notStarted}| NOTSTARTED[\"Not executed<br/><b>${notStarted}</b>\"]`,
-    `  INPUT -->|Input success: ${input.advancedOrQualifiedOrCompleted}| EVIDENCE{\"Terminal result artifact?\"}`,
-    `  INPUT -->|Input failure: ${input.stopped}| INPUTFAIL[\"Input failures<br/><b>${input.stopped}</b>\"]`,
+    `  INPUT -->|Input continued: ${input.advancedOrQualifiedOrCompleted}| EVIDENCE{\"Terminal result artifact?\"}`,
+    `  INPUT -->|Stopped at input: ${input.stopped}| INPUTFAIL[\"${inputStopped}\"]`,
     `  EVIDENCE -->|Reporting evidence available: ${counts.terminalResults}| BROWSER[\"Browser stage<br/>Entered: ${browser.entered}\"]`,
     `  EVIDENCE -->|Reporting evidence incomplete: ${counts.incomplete}| INCOMPLETE[\"Incomplete / still running<br/><b>${counts.incomplete}</b><br/>Excluded from responsibility totals\"]`,
-    `  BROWSER -->|Browser success: ${browser.advancedOrQualifiedOrCompleted} (${formatPercent(browser.advanceRateAmongEntrants)})| DISCOVERY[\"Discovery stage<br/>Entered: ${discovery.entered}\"]`,
-    `  BROWSER -->|Browser failure: ${browser.stopped} (${formatPercent(browser.stopRateAmongEntrants)})| BROWSERFAIL[\"Browser failures<br/><b>${browser.stopped}</b><br/>Non-workflow: ${browser.attribution.non_workflow_attributable.count}<br/>Indeterminate: ${browser.attribution.indeterminate.count}\"]`,
-    `  DISCOVERY -->|Discovery success: ${discovery.advancedOrQualifiedOrCompleted} (${formatPercent(discovery.advanceRateAmongEntrants)})| POPULATION[\"Population stage<br/>Entered: ${population.entered}\"]`,
-    `  DISCOVERY -->|Discovery failure: ${discovery.stopped} (${formatPercent(discovery.stopRateAmongEntrants)})| DISCOVERYFAIL[\"Discovery failures<br/><b>${discovery.stopped}</b><br/>Non-workflow: ${discovery.attribution.non_workflow_attributable.count}<br/>Indeterminate: ${discovery.attribution.indeterminate.count}\"]`,
-    `  POPULATION -->|Population success: ${population.advancedOrQualifiedOrCompleted} (${formatPercent(population.advanceRateAmongEntrants)})| SUBMISSION[\"Submission stage<br/>Entered: ${submission.entered}\"]`,
-    `  POPULATION -->|Population failure: ${population.stopped} (${formatPercent(population.stopRateAmongEntrants)})| POPULATIONFAIL[\"Population failures<br/><b>${population.stopped}</b><br/>Workflow-attributable: ${population.attribution.workflow_attributable.count}\"]`,
-    `  SUBMISSION -->|Submission success: ${submission.advancedOrQualifiedOrCompleted} (${formatPercent(submission.advanceRateAmongEntrants)})| SUCCESS[\"Confirmed successful submissions<br/><b>${counts.completed}</b>\"]`,
-    `  SUBMISSION -->|Submission failure: ${submission.stopped} (${formatPercent(submission.stopRateAmongEntrants)})| SUBMISSIONFAIL[\"Submission failures<br/><b>${submission.stopped}</b><br/>Workflow: ${submission.attribution.workflow_attributable.count}<br/>Non-workflow: ${submission.attribution.non_workflow_attributable.count}<br/>Indeterminate: ${submission.attribution.indeterminate.count}\"]`,
+    `  BROWSER -->|Browser continued: ${browser.advancedOrQualifiedOrCompleted} (${formatPercent(browser.advanceRateAmongEntrants)})| DISCOVERY[\"Discovery stage<br/>Entered: ${discovery.entered}\"]`,
+    `  BROWSER -->|Stopped at browser: ${browser.stopped} (${formatPercent(browser.stopRateAmongEntrants)})| BROWSERFAIL[\"${browserStopped}\"]`,
+    `  DISCOVERY -->|Discovery continued: ${discovery.advancedOrQualifiedOrCompleted} (${formatPercent(discovery.advanceRateAmongEntrants)})| POPULATION[\"Population stage<br/>Entered: ${population.entered}\"]`,
+    `  DISCOVERY -->|Stopped at discovery: ${discovery.stopped} (${formatPercent(discovery.stopRateAmongEntrants)})| DISCOVERYFAIL[\"${discoveryStopped}\"]`,
+    `  POPULATION -->|Population continued: ${population.advancedOrQualifiedOrCompleted} (${formatPercent(population.advanceRateAmongEntrants)})| SUBMISSION[\"Submission stage<br/>Entered: ${submission.entered}\"]`,
+    `  POPULATION -->|Stopped at population: ${population.stopped} (${formatPercent(population.stopRateAmongEntrants)})| POPULATIONFAIL[\"${populationStopped}\"]`,
+    `  SUBMISSION -->|Confirmed success: ${submission.advancedOrQualifiedOrCompleted} (${formatPercent(submission.advanceRateAmongEntrants)})| SUCCESS[\"Confirmed success<br/><b>${counts.completed}</b>\"]`,
+    `  SUBMISSION -->|Submission not confirmed: ${submission.stopped} (${formatPercent(submission.stopRateAmongEntrants)})| SUBMISSIONFAIL[\"${submissionStopped}\"]`,
     `  SUCCESS -.-> REPORTING[\"Reporting evidence<br/>Complete terminal artifacts: ${reporting.advancedOrQualifiedOrCompleted}<br/>Incomplete: ${reporting.incomplete}\"]`,
     "",
     "  classDef success fill:#dcfce7,stroke:#15803d,color:#14532d;",
-    "  classDef failure fill:#fee2e2,stroke:#b91c1c,color:#7f1d1d;",
+    "  classDef failure fill:#fee2e2,stroke:#b91c1c,color:#1f2937;",
     "  classDef warning fill:#fef3c7,stroke:#b45309,color:#78350f;",
-    "  classDef stage fill:#dbeafe,stroke:#1d4ed8,color:#1e3a8a;",
+    "  classDef stage fill:#374151,stroke:#111827,color:#f9fafb;",
     "  class INPUT,BROWSER,DISCOVERY,POPULATION,SUBMISSION,PLAN,EVIDENCE,REPORTING stage;",
     "  class SUCCESS success;",
     "  class INPUTFAIL,BROWSERFAIL,DISCOVERYFAIL,POPULATIONFAIL,SUBMISSIONFAIL failure;",
@@ -205,9 +327,10 @@ export const renderMermaidReport = (result: AnalyticsResult): string =>
     "",
     "Notes:",
     "",
-    '- "Success" on an intermediate arrow means the site advanced to the next stage; only the final green node is a confirmed submission success.',
-    "- Incomplete directories are not treated as failures and are excluded from responsibility attribution.",
-    "- Reporting is cross-cutting: a report can record either an earlier-stage failure or a final success.",
+    '- "Continued" means the site advanced to the next stage; only the final green node represents confirmed success.',
+    "- Bold red text identifies outcomes that are likely attributable to the automation.",
+    "- Incomplete directories are tracked separately from stopped outcomes and excluded from responsibility attribution.",
+    "- Reporting is cross-cutting: a report can record either an earlier-stage stop or a final success.",
     "",
   ].join("\r\n");
 
@@ -244,6 +367,7 @@ const renderMermaidSvgUncached = async (definition: string): Promise<string> => 
         startOnLoad: false,
         theme: "default",
         securityLevel: "strict",
+        flowchart: { wrappingWidth: 600 },
       });
       const rendered = await mermaidApi.render("contact-form-funnel", source);
       return rendered.svg.replace(/<br>/gi, "<br/>");
@@ -253,8 +377,7 @@ const renderMermaidSvgUncached = async (definition: string): Promise<string> => 
   }
 };
 
-const renderMermaidSvg = async (result: AnalyticsResult): Promise<string> => {
-  const definition = renderMermaidDefinition(result);
+const renderMermaidSvg = async (definition: string): Promise<string> => {
   const cached = mermaidSvgCache.get(definition);
   if (cached) return cached;
   const rendering = renderMermaidSvgUncached(definition);
@@ -1029,7 +1152,8 @@ const prefixedFiles = (prefix: string, files: OutputFiles): OutputFiles =>
 
 const outputFiles = async (result: OutreachAnalyticsResult): Promise<OutputFiles> => {
   const forms = result.channels.forms;
-  const qualitativeMermaidSvg = await renderMermaidSvg(forms);
+  const qualitativeMermaidSvg = await renderMermaidSvg(renderMermaidDefinition(forms));
+  const browserDiscoverySignalsHtml = renderBrowserDiscoverySignalsHtml(forms);
   const signalDashboardHtml = renderSignalDashboardHtml(forms);
   const signalDashboardPng = await renderSignalDashboardPng(signalDashboardHtml);
   const formFiles = {
@@ -1037,11 +1161,13 @@ const outputFiles = async (result: OutreachAnalyticsResult): Promise<OutputFiles
     "qualitative-statistics-compact.txt": renderTextReport(forms, false),
     "qualitative-statistics-mermaid.md": renderMermaidReport(forms),
     "qualitative-statistics-mermaid.svg": qualitativeMermaidSvg,
+    "browser-discovery-signals.html": browserDiscoverySignalsHtml,
     "qualitative-statistics-proportional.svg": renderProportionalFunnelSvg(forms),
     "qualitative-statistics.json": `${JSON.stringify(forms, null, 2)}\n`,
     "stage-statistics.csv": stageCsv(forms),
     "discovery-observability-statistics.csv": discoveryObservabilitySummaryCsv(forms),
     "discovery-observability-sites.csv": discoveryObservabilitySiteCsv(forms),
+    "discovery-reassessment-sites.csv": discoveryReassessmentSiteCsv(forms),
     "site-classifications.csv": siteCsv(forms.sites),
     "rulebook.json": `${JSON.stringify(serializedRulebook, null, 2)}\n`,
     [path.join("signals", "positive-signal-statistics.csv")]: formSignalCsv(

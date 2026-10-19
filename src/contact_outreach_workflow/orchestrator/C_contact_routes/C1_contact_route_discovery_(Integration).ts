@@ -158,6 +158,7 @@ async function collect_ranked_contact_routes(
       ) {
         continue;
       }
+      if (is_structural_navigation_link(link.text, url, current_url)) continue;
 
       const searchable =
         `${link.text} ${link.context} ${url.pathname.toLowerCase()} ${url.hash.toLowerCase()}`;
@@ -169,10 +170,11 @@ async function collect_ranked_contact_routes(
         continue;
       }
 
-      const existing = routes_by_url.get(url.toString());
+      const canonical_url = canonical_contact_route_url(url.toString());
+      const existing = routes_by_url.get(canonical_url);
       if (!existing || score > existing.score) {
-        routes_by_url.set(url.toString(), {
-          url: url.toString(),
+        routes_by_url.set(canonical_url, {
+          url: canonical_url,
           score,
           label: link.text || link.context,
         });
@@ -185,6 +187,32 @@ async function collect_ranked_contact_routes(
   return [...routes_by_url.values()].sort(
     (left, right) => right.score - left.score,
   );
+}
+
+const TRACKING_PARAMETER = /^(?:utm_.+|gclid|fbclid|msclkid|mc_cid|mc_eid|ref|source)$/i;
+const CONTACT_FRAGMENT = /contact|inquir|enquir|quote|consult|support|help|book|schedule|appointment|צור.?קשר|יצירת.?קשר|פנייה|פניה|הצעת.?מחיר|ייעוץ/u;
+const STRUCTURAL_FRAGMENT = /^(?:#?(?:skip(?:-to)?-(?:main-)?content|main(?:-content)?|content|navigation|nav|top|page-top|header|primary-content))$/i;
+const STRUCTURAL_LABEL = /^(?:skip(?:\s+to)?\s+(?:main\s+)?(?:content|navigation)|go\s+to\s+(?:main\s+)?content|main\s+content|back\s+to\s+top|חזרה\s+לראש\s+העמוד|דלג(?:ו)?\s+לתוכן|דילוג\s+לתוכן|תוכן\s+ראשי)$/iu;
+
+export function canonical_contact_route_url(value: string): string {
+  const url = new URL(value);
+  url.hostname = url.hostname.toLowerCase();
+  url.pathname = url.pathname.replace(/\/{2,}/g, "/").replace(/\/+$/, "") || "/";
+  for (const key of [...url.searchParams.keys()]) {
+    if (TRACKING_PARAMETER.test(key)) url.searchParams.delete(key);
+  }
+  url.searchParams.sort();
+  if (url.hash && !CONTACT_FRAGMENT.test(url.hash)) url.hash = "";
+  return url.toString();
+}
+
+function is_structural_navigation_link(text: string, url: URL, currentUrl: URL): boolean {
+  const normalized_text = text.normalize("NFKC").trim().replace(/\s+/g, " ");
+  if (STRUCTURAL_LABEL.test(normalized_text)) return true;
+  return url.origin === currentUrl.origin &&
+    url.pathname === currentUrl.pathname &&
+    Boolean(url.hash) &&
+    STRUCTURAL_FRAGMENT.test(url.hash);
 }
 
 function safe_url_origin(value: string): string {

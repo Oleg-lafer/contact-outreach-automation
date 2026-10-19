@@ -977,6 +977,7 @@ export const classifySite = (site: SiteEvidence): SiteClassification => {
       status: site.status,
       failureKind: site.failureKind,
       discoveryAssessment: site.discoveryAssessment,
+      ...(site.discoveryReassessment ? { discoveryReassessment: site.discoveryReassessment } : {}),
       stageStates: buildStageStates(site, decision),
       ...(site.browserStage ? { browserStage: site.browserStage } : {}),
     };
@@ -1027,6 +1028,7 @@ export const classifySite = (site: SiteEvidence): SiteClassification => {
     status: site.status,
     failureKind: site.failureKind,
     discoveryAssessment: site.discoveryAssessment,
+    ...(site.discoveryReassessment ? { discoveryReassessment: site.discoveryReassessment } : {}),
     stageStates: buildStageStates(site, decision),
     ...(site.browserStage ? { browserStage: site.browserStage } : {}),
   };

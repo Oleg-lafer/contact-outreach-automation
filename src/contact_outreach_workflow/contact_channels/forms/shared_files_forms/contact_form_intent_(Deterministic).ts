@@ -57,50 +57,87 @@ export async function assess_contact_form(
           new RegExp(source, "iu"),
         ]),
       ) as Record<FormSemanticKey, RegExp>;
+      // Anonymous browser-context helpers avoid transpiler-injected Node helpers
+      // leaking into Playwright's serialized callback.
+      const is_visible = [(candidate: unknown): candidate is Element => {
+        if (!(candidate instanceof Element)) return false;
+        const view = candidate.ownerDocument.defaultView;
+        if (!view) return false;
+        try {
+          const style = view.getComputedStyle(candidate);
+          const rectangle = candidate.getBoundingClientRect();
+          return style.display !== "none" && style.visibility !== "hidden" && rectangle.width > 0 && rectangle.height > 0;
+        } catch {
+          return false;
+        }
+      }][0]!;
+      const normalized_control_text = [(control: Element): string => [
+        control.textContent,
+        control.getAttribute("name"),
+        control.id,
+        control.getAttribute("value"),
+        control.getAttribute("placeholder"),
+        control.getAttribute("aria-label"),
+        control.getAttribute("title"),
+      ].filter(Boolean).join(" ").normalize("NFKC")
+        .replace(/[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, "")
+        .replace(/[\u0591-\u05bd\u05bf-\u05c7]/g, "")
+        .toLowerCase()][0]!;
       const controls = Array.from(
         element.querySelectorAll(
-          'input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="reset"]), textarea, select, [contenteditable="true"]',
+          'input:not([type="hidden"]):not([type="submit"]):not([type="image"]):not([type="button"]):not([type="reset"]), textarea, select, [contenteditable="true"]',
         ),
-      ).filter((candidate) => {
-        const html_element = candidate as HTMLElement;
-        const style = window.getComputedStyle(html_element);
-        const rectangle = html_element.getBoundingClientRect();
-        return (
-          style.display !== "none" &&
-          style.visibility !== "hidden" &&
-          rectangle.width > 0 &&
-          rectangle.height > 0
-        );
-      });
-      const submit_controls = Array.from(
-        element.querySelectorAll(
-          'button, input[type="submit"], input[type="button"], [role="button"], a[href]',
-        ),
-      ).filter((candidate) => {
-        const html_element = candidate as HTMLElement;
-        const style = window.getComputedStyle(html_element);
-        const rectangle = html_element.getBoundingClientRect();
+      ).filter(is_visible);
+      const submit_selector = 'button, input[type="submit"], input[type="image"], input[type="button"], [role="button"], a[href]';
+      const submit_candidates: Element[] = Array.from(element.querySelectorAll(submit_selector));
+      if (element instanceof HTMLFormElement) {
+        submit_candidates.push(...Array.from(element.elements).filter(
+          (candidate): candidate is Element => candidate instanceof Element && candidate.matches(submit_selector),
+        ));
+        if (element.id) {
+          submit_candidates.push(...Array.from(document.querySelectorAll("[form]")).filter(
+            (candidate) => candidate.getAttribute("form") === element.id && candidate.matches(submit_selector),
+          ));
+        }
+      }
+      const association_scope = element.closest("section, article, main") ?? element.parentElement;
+      if (association_scope) {
+        const visible_forms = Array.from(association_scope.querySelectorAll("form")).filter(is_visible);
+        const candidate_is_unambiguous = element instanceof HTMLFormElement
+          ? visible_forms.length === 1 && visible_forms[0] === element
+          : visible_forms.length === 0;
+        if (candidate_is_unambiguous) {
+          const external = Array.from(association_scope.querySelectorAll(submit_selector)).filter((candidate) => {
+            if (element.contains(candidate) || candidate.closest("form")) return false;
+            const type = candidate.getAttribute("type")?.toLowerCase() ?? "";
+            return ["submit", "image"].includes(type) || semantic.submit.test(normalized_control_text(candidate));
+          });
+          if (external.length === 1) submit_candidates.push(external[0]!);
+        }
+      }
+      const submit_controls = [...new Set(submit_candidates)].filter((candidate) => {
+        if (!is_visible(candidate)) return false;
         const tag = candidate.tagName.toLowerCase();
+        const type = candidate.getAttribute("type")?.toLowerCase() ?? "";
         const semantics = [
           candidate.textContent,
+          candidate.getAttribute("value"),
           candidate.id,
           candidate.getAttribute("class"),
           candidate.getAttribute("aria-label"),
         ]
           .filter(Boolean)
           .join(" ");
-        return (
-          style.display !== "none" &&
-          style.visibility !== "hidden" &&
-          rectangle.width > 0 &&
-          rectangle.height > 0 &&
-          (tag !== "a" ||
-            candidate.getAttribute("role") === "button" ||
-            semantic.submit.test(semantics.normalize("NFKC")
-              .replace(/[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, "")
-              .replace(/[\u0591-\u05bd\u05bf-\u05c7]/g, "")
-              .toLowerCase()))
-        );
+        const normalized_semantics = semantics.normalize("NFKC")
+          .replace(/[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, "")
+          .replace(/[\u0591-\u05bd\u05bf-\u05c7]/g, "")
+          .toLowerCase();
+        const semantic_control = semantic.submit.test(normalized_semantics) ||
+          semantic.progression.test(normalized_semantics);
+        if (tag === "button") return type === "" || type === "submit" || (type === "button" && semantic_control);
+        if (tag === "input") return ["submit", "image"].includes(type) || (type === "button" && semantic_control);
+        if (tag === "a") return candidate.getAttribute("role") === "button" || semantic_control;
+        return candidate.getAttribute("role") === "button" && semantic_control;
       });
       const control_metadata = controls
         .map((control) => {
@@ -189,17 +226,17 @@ export async function assess_contact_form(
           .filter(Boolean)
           .join(" ")
           .trim();
-        return (
-          ["submit", "image"].includes(type) ||
-          semantic.submit.test(label.normalize("NFKC")
+        const native_submit = ["submit", "image"].includes(type) ||
+          (tag === "button" && type === "");
+        const semantic_submit = semantic.submit.test(label.normalize("NFKC")
             .replace(/[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, "")
             .replace(/[\u0591-\u05bd\u05bf-\u05c7]/g, "")
-            .toLowerCase())
-        ) && !new RegExp(`^(?:${semantic.progression.source})$`, "iu")
+            .toLowerCase()) && !new RegExp(`^(?:${semantic.progression.source})$`, "iu")
           .test(label.normalize("NFKC")
             .replace(/[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, "")
             .replace(/[\u0591-\u05bd\u05bf-\u05c7]/g, "")
             .toLowerCase());
+        return native_submit || semantic_submit;
       });
       const context_container =
         element.closest("section, article, main") ?? element.parentElement;
@@ -220,12 +257,16 @@ export async function assess_contact_form(
         .replace(/[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, "")
         .replace(/[\u0591-\u05bd\u05bf-\u05c7]/g, "")
         .toLowerCase();
-      const has_message =
-        controls.some(
-          (control) =>
-            control.tagName.toLowerCase() === "textarea" ||
-            control.getAttribute("contenteditable") === "true",
-        ) || semantic.message.test(control_metadata.normalize("NFKC"));
+      const has_message = controls.some((control) => {
+        const tag = control.tagName.toLowerCase();
+        const type = control.getAttribute("type")?.toLowerCase() ?? "text";
+        if (tag === "textarea" || control.getAttribute("contenteditable") === "true") return true;
+        if (tag !== "input" || !["", "text"].includes(type)) return false;
+        const labels = "labels" in control
+          ? Array.from((control as HTMLInputElement).labels ?? []).map((label) => label.textContent ?? "").join(" ")
+          : "";
+        return semantic.message.test(`${normalized_control_text(control)} ${labels}`);
+      });
       const has_email =
         controls.some(
           (control) => control.getAttribute("type")?.toLowerCase() === "email",
@@ -244,13 +285,19 @@ export async function assess_contact_form(
         .normalize("NFKC").toLowerCase();
       const has_business_or_project = semantic.company.test(business_text) ||
         /project|service|budget|challenge|goal|פרויקט|שירות|תקציב|אתגר|מטרה/u.test(business_text);
-      const has_submit = submit_controls.length > 0;
+      const has_submit = has_direct_submit;
       const normalized_context = context.normalize("NFKC").toLowerCase();
       const has_contact_context = semantic.contact.test(normalized_context);
-      const has_search_or_login_context =
+      const has_search_control = controls.some((control) => {
+        const tag = control.tagName.toLowerCase();
+        const type = control.getAttribute("type")?.toLowerCase() ?? "";
+        return tag === "input" && (type === "search" || semantic.search.test(normalized_control_text(control)));
+      });
+      const has_search_or_login_context = !has_message && (
         semantic.login.test(normalized_context) ||
-        (semantic.search.test(normalized_context) &&
-          !has_message && !has_contact_context);
+        has_search_control ||
+        semantic.search.test(normalized_context)
+      );
       const has_route_context =
         semantic.directions.test(normalized_context) && !has_message;
       const has_newsletter_context =
@@ -365,8 +412,13 @@ export async function assess_contact_form(
       const diagnostic_controls = [...controls, ...submit_controls]
         .slice(0, 20)
         .map((control) => {
-          const bounds = (control as HTMLElement).getBoundingClientRect();
-          const style = window.getComputedStyle(control as HTMLElement);
+          let bounds = { width: 0, height: 0 };
+          try {
+            const rectangle = control.getBoundingClientRect();
+            bounds = { width: rectangle.width, height: rectangle.height };
+          } catch {
+            // Detached elements remain represented as non-visible diagnostics.
+          }
           const labels = "labels" in control
             ? Array.from((control as HTMLInputElement | HTMLTextAreaElement).labels ?? [])
                 .map((label) => label.textContent ?? "")
@@ -382,7 +434,7 @@ export async function assess_contact_form(
             required: control.hasAttribute("required") || control.getAttribute("aria-required") === "true",
             disabled: control.hasAttribute("disabled") || control.getAttribute("aria-disabled") === "true",
             readOnly: control.hasAttribute("readonly"),
-            visible: style.display !== "none" && style.visibility !== "hidden" && bounds.width > 0 && bounds.height > 0,
+            visible: is_visible(control),
             width: Math.round(bounds.width),
             height: Math.round(bounds.height),
           };
