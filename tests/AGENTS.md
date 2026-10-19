@@ -58,6 +58,9 @@ After validation, Codex must report:
 
 ## Test File Dictionary
 
+- `contact-us-import.test.ts` - CSV and URL validation, import counts, transaction
+  rollback and conflict handling, internal HTTP limits and service-token checks.
+
 - `contact-form-poc.test.ts` - broad local-server workflow regression suite,
   including English, Hebrew, and mixed-language end-to-end behavior:
   discovery, route following, multi-step forms, population, validation,

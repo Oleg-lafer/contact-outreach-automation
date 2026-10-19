@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "api:serve": "tsx src/api/serve.ts",
     "start": "tsx src/contact_outreach_workflow/contact_outreach_orchestrator.ts",
     "production": "tsx src/contact_outreach_workflow/contact_outreach_orchestrator.ts production",
     "deep-debug": "tsx src/contact_outreach_workflow/contact_outreach_orchestrator.ts deep-debug",
@@ -24,6 +25,7 @@
     "@browserbasehq/stagehand": "3.6.0",
     "@openrouter/ai-sdk-provider": "1.5.4",
     "ai": "5.0.133",
+    "csv-parse": "7.0.3",
     "mysql2": "^3.23.2",
     "playwright": "^1.61.0",
     "tldts": "^7.4.10",

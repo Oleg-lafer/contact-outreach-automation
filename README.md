@@ -186,3 +186,9 @@ tests/                          Local fixture and unit tests
 ```
 
 The system deliberately excludes CAPTCHA solving, shadow-DOM-specific automation, anti-bot bypasses, autonomous agents, email sending, and meeting booking.
+
+## ContactUs upload API
+
+The optional internal CSV import service is documented in
+[src/api/README.md](src/api/README.md). Start it with `npm run api:serve`.
+Importing websites does not start an outreach run.
