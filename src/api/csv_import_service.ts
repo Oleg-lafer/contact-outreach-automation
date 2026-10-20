@@ -1,5 +1,5 @@
 import { parse, CsvError } from "csv-parse/sync";
-import { isIP } from "node:net";
+import { valid_website_url } from "./website_url.js";
 import { normalize_outreach_domain } from "../contact_outreach_workflow/shared_files_orchestrator/website_identity_(Deterministic).js";
 import { ImportError, MAX_CSV_BYTES, MAX_CSV_ROWS, parse_campaign_id,
   type ImportResult, type RowError, type WebsiteImportEntry } from "./import_contract.js";
@@ -55,18 +55,9 @@ export function validate_csv(bytes: Uint8Array): {
     const value = raw.trim();
     try {
       // Inspect the raw field too: URL() and trim() silently remove some control characters.
-      const authority = /^https?:\/\/([^/?#]+)/i.exec(value)?.[1];
       if (item.record.length !== 1 || /[\u0000-\u001f\u007f]/u.test(raw) ||
-          !authority || authority.includes("@") || /\s/u.test(value) || value.includes("\\") ||
+          !valid_website_url(value) ||
           [...value].length > 2048) throw new Error("invalid URL");
-      const url = new URL(value);
-      if (!url.hostname || url.username || url.password ||
-          !["http:", "https:"].includes(url.protocol)) throw new Error("invalid URL");
-      const hostname = url.hostname.replace(/\.$/, "");
-      if (hostname.length > 253 || (!isIP(hostname.replace(/^\[|\]$/g, "")) &&
-          !hostname.split(".").every(label => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i.test(label)))) {
-        throw new Error("invalid hostname");
-      }
       const normalizedDomain = normalize_outreach_domain(value);
       if (normalizedDomain.length > 253) throw new Error("domain too long");
       if (!entries.has(normalizedDomain)) entries.set(normalizedDomain, {

@@ -247,19 +247,22 @@ export function campaign_from_database_row(row: {
     : row.sender_details;
   if (!is_record(raw)) throw new Error("Campaign sender_details must be a JSON object.");
   const senderDetails = {
-    name: required_string(raw.name, "sender_details.name"),
-    email: required_string(raw.email, "sender_details.email"),
-    phone: required_string(raw.phone, "sender_details.phone"),
-    company: required_string(raw.company, "sender_details.company"),
-    role: required_string(raw.role, "sender_details.role"),
-    website: required_string(raw.website, "sender_details.website"),
-    country: required_string(raw.country, "sender_details.country"),
+    name: required_preserved_string(raw.name, "sender_details.name"),
+    email: required_preserved_string(raw.email, "sender_details.email"),
+    phone: required_preserved_string(raw.phone, "sender_details.phone"),
+    company: required_preserved_string(raw.company, "sender_details.company"),
+    role: optional_sender_string(raw.role, "role"),
+    website: optional_sender_string(raw.website, "website"),
+    country: optional_sender_string(raw.country, "country"),
+    ...(raw.firstName === undefined ? {} : { firstName: optional_sender_string(raw.firstName, "firstName") }),
+    ...(raw.lastName === undefined ? {} : { lastName: optional_sender_string(raw.lastName, "lastName") }),
+    ...(raw.industry === undefined ? {} : { industry: optional_sender_string(raw.industry, "industry") }),
   };
   return {
     campaignId: positive_integer(row.campaign_id, "campaign_id"),
     campaignName: required_string(row.campaign_name, "campaign_name"),
     senderDetails,
-    messageToSend: required_string(row.message_to_send, "message_to_send"),
+    messageToSend: required_preserved_string(row.message_to_send, "message_to_send"),
     preventResend: Boolean(row.prevent_resend),
   };
 }
@@ -272,9 +275,16 @@ export function contact_request_from_database(
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
     throw new Error(`Website ${website.websiteId} must use HTTP or HTTPS.`);
   }
+  const sender = campaign.senderDetails;
   return {
     websiteUrl: parsed.toString(),
-    ...campaign.senderDetails,
+    name: sender.name,
+    email: sender.email,
+    phone: sender.phone,
+    company: sender.company,
+    ...(sender.role.trim() ? { role: sender.role } : {}),
+    ...(sender.website.trim() ? { website: sender.website } : {}),
+    ...(sender.country.trim() ? { country: sender.country } : {}),
     message: campaign.messageToSend,
   };
 }
@@ -345,10 +355,20 @@ function candidate_from_row(row: CandidateRow): DatabaseWebsiteCandidate {
 }
 
 function required_string(value: unknown, name: string): string {
+  return required_preserved_string(value, name).trim();
+}
+
+function required_preserved_string(value: unknown, name: string): string {
   if (typeof value !== "string" || value.trim() === "") {
     throw new Error(`${name} must be a non-empty string.`);
   }
-  return value.trim();
+  return value;
+}
+
+function optional_sender_string(value: unknown, name: string): string {
+  if (value === undefined) return "";
+  if (typeof value !== "string") throw new Error(`sender_details.${name} must be a string.`);
+  return value;
 }
 
 function positive_integer(value: unknown, name: string): number {

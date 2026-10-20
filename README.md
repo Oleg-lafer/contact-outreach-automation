@@ -189,6 +189,6 @@ The system deliberately excludes CAPTCHA solving, shadow-DOM-specific automation
 
 ## ContactUs upload API
 
-The optional internal CSV import service is documented in
+The optional ContactUs service creates campaigns and imports website CSVs. It is documented in
 [src/api/README.md](src/api/README.md). Start it with `npm run api:serve`.
 Importing websites does not start an outreach run.

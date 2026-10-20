@@ -58,6 +58,9 @@ After validation, Codex must report:
 
 ## Test File Dictionary
 
+- `contact-us-campaign.test.ts` - campaign validation, exact message storage,
+  transaction failures, campaign-loader compatibility and internal creation HTTP contracts.
+
 - `contact-us-import.test.ts` - CSV and URL validation, import counts, transaction
   rollback and conflict handling, internal HTTP limits and service-token checks.
 
