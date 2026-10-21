@@ -13,7 +13,8 @@ import type {
 import type { OutreachSenderDetails } from "./outreach_history_types_(Support).js";
 import { replace_unpaired_surrogates, stringify_mysql_safe_json } from "./unicode_text_(Support).js";
 
-export type DatabaseCandidateMode = "unattempted" | "retry-unsuccessful";
+export type DatabaseCandidateMode = "unattempted" | "retry-unsuccessful" | "api-run";
+export interface DatabaseRunContext { runNumber: number; websiteIdUpperBound: number }
 
 export interface DatabaseCampaign {
   campaignId: number;
@@ -50,6 +51,8 @@ interface AttemptStateRow extends RowDataPacket {
   attempt_id: number;
   execution_status: string;
   forms_result: string | null;
+  run_number?: number | string;
+  outcome_reason?: string;
 }
 
 export interface DatabaseCampaignRepository {
@@ -57,11 +60,13 @@ export interface DatabaseCampaignRepository {
   snapshotCandidates(
     campaignId: number,
     mode: DatabaseCandidateMode,
+    context?: DatabaseRunContext,
   ): Promise<DatabaseWebsiteCandidate[]>;
   claimWebsite(
     campaign: DatabaseCampaign,
     websiteId: number,
     mode: DatabaseCandidateMode,
+    context?: DatabaseRunContext,
   ): Promise<DatabaseWebsiteClaim>;
   completeAttempt(attemptId: number, outcome: ContactOutreachOutcome): Promise<void>;
   recoverStaleAttempts(campaignId: number, staleBefore: Date): Promise<number>;
@@ -99,7 +104,21 @@ implements DatabaseCampaignRepository {
   public async snapshotCandidates(
     campaignId: number,
     mode: DatabaseCandidateMode,
+    context?: DatabaseRunContext,
   ): Promise<DatabaseWebsiteCandidate[]> {
+    if (mode === "api-run") {
+      if (!context) throw new Error("API run context is required.");
+      const [rows] = await this.pool.execute<CandidateRow[]>(
+        `SELECT website.website_id, website.original_input_url FROM OUTREACH_websites website
+         WHERE website.campaign_id = ? AND website.website_id <= ?
+           AND (NOT EXISTS (SELECT 1 FROM OUTREACH_attempts a WHERE a.website_id = website.website_id)
+             OR EXISTS (SELECT 1 FROM OUTREACH_attempts a WHERE a.website_id = website.website_id
+               AND a.attempt_id = (SELECT MAX(last.attempt_id) FROM OUTREACH_attempts last WHERE last.website_id = website.website_id)
+               AND a.run_number = ? AND a.execution_status = 'run_failed' AND a.outcome_reason = 'WORKER_INTERRUPTED'))
+           AND NOT EXISTS (SELECT 1 FROM OUTREACH_attempts a WHERE a.website_id = website.website_id AND a.forms_result = 'success')
+         ORDER BY website.website_id`, [campaignId, context.websiteIdUpperBound, context.runNumber]);
+      return rows.map(candidate_from_row);
+    }
     const eligibility = mode === "unattempted"
       ? `NOT EXISTS (
            SELECT 1 FROM \`OUTREACH_attempts\` AS attempt
@@ -139,6 +158,7 @@ implements DatabaseCampaignRepository {
     campaign: DatabaseCampaign,
     websiteId: number,
     mode: DatabaseCandidateMode,
+    context?: DatabaseRunContext,
   ): Promise<DatabaseWebsiteClaim> {
     const connection = await this.pool.getConnection();
     try {
@@ -152,13 +172,17 @@ implements DatabaseCampaignRepository {
         await connection.rollback();
         return { action: "unavailable", websiteId, reason: "Website is no longer in the campaign." };
       }
-      const attempts = await select_attempt_states(connection, websiteId);
+      if (mode === "api-run" && (!context || websiteId > context.websiteIdUpperBound)) {
+        await connection.rollback();
+        return { action: "unavailable", websiteId, reason: "Website is outside this run." };
+      }
+      const attempts = await select_attempt_states(connection, websiteId, context !== undefined);
       const previous_success = attempts.some(
         (attempt) => attempt.forms_result === "success",
       );
       if (campaign.preventResend && previous_success) {
         const reason = `Skipped because campaign ${campaign.campaignId} already has a successful attempt for website ${websiteId}.`;
-        const attemptId = await insert_attempt(connection, websiteId, "skipped", reason);
+        const attemptId = await insert_attempt(connection, websiteId, "skipped", reason, context?.runNumber);
         await connection.commit();
         return { action: "skip", attemptId, website, reason };
       }
@@ -170,11 +194,11 @@ implements DatabaseCampaignRepository {
           reason: "Successful websites are excluded from database retry runs.",
         };
       }
-      if (!claim_is_still_eligible(attempts, mode)) {
+      if (!claim_is_still_eligible(attempts, mode, context?.runNumber)) {
         await connection.rollback();
         return { action: "unavailable", websiteId, reason: "Website eligibility changed after the campaign snapshot." };
       }
-      const attemptId = await insert_attempt(connection, websiteId, "running");
+      const attemptId = await insert_attempt(connection, websiteId, "running", undefined, context?.runNumber);
       await connection.commit();
       return { action: "run", attemptId, website };
     } catch (error) {
@@ -290,12 +314,16 @@ export function contact_request_from_database(
 }
 
 export function claim_is_still_eligible(
-  attempts: ReadonlyArray<{ execution_status: string; forms_result: string | null }>,
+  attempts: ReadonlyArray<{ execution_status: string; forms_result: string | null; run_number?: number | string; outcome_reason?: string }>,
   mode: DatabaseCandidateMode,
+  runNumber?: number,
 ): boolean {
   if (attempts.some((attempt) => attempt.execution_status === "running")) return false;
   if (mode === "unattempted") return attempts.length === 0;
   const latest = attempts[0];
+  if (mode === "api-run") return attempts.length === 0 ||
+    (runNumber !== undefined && String(latest?.run_number) === String(runNumber) &&
+      latest?.execution_status === "run_failed" && latest.outcome_reason === "WORKER_INTERRUPTED");
   return latest?.execution_status === "run_failed" ||
     (latest?.execution_status === "finished" &&
       ["failed", "partial", "inconclusive"].includes(latest.forms_result ?? ""));
@@ -319,9 +347,10 @@ async function select_website_for_update(
 async function select_attempt_states(
   connection: PoolConnection,
   websiteId: number,
+  includeRun = false,
 ): Promise<AttemptStateRow[]> {
   const [rows] = await connection.execute<AttemptStateRow[]>(
-    `SELECT attempt_id, execution_status, forms_result
+    `SELECT attempt_id, execution_status, forms_result${includeRun ? ", run_number, outcome_reason" : ""}
      FROM \`OUTREACH_attempts\`
      WHERE website_id = ?
      ORDER BY attempt_id DESC
@@ -336,7 +365,16 @@ async function insert_attempt(
   websiteId: number,
   status: "running" | "skipped",
   reason?: string,
+  runNumber?: number,
 ): Promise<number> {
+  if (runNumber !== undefined) {
+    const [insert] = await connection.execute<ResultSetHeader>(
+      status === "running"
+        ? "INSERT INTO OUTREACH_attempts (website_id, run_number, execution_status, started_time) VALUES (?, ?, 'running', CURRENT_TIMESTAMP(3))"
+        : "INSERT INTO OUTREACH_attempts (website_id, run_number, execution_status, outcome_reason, completed_time) VALUES (?, ?, 'skipped', ?, CURRENT_TIMESTAMP(3))",
+      status === "running" ? [websiteId, runNumber] : [websiteId, runNumber, reason ?? null]);
+    return positive_integer(insert.insertId, "attempt_id");
+  }
   const [result] = await connection.execute<ResultSetHeader>(
     status === "running"
       ? `INSERT INTO \`OUTREACH_attempts\`

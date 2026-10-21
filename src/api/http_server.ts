@@ -4,6 +4,8 @@ import { import_websites, type WebsiteImportRepository } from "./csv_import_serv
 import { ImportError, MAX_CSV_BYTES, parse_campaign_id } from "./import_contract.js";
 import { createCampaign, parseCampaignJson, MAX_CAMPAIGN_BYTES, type CampaignRepository } from "./campaign_service.js";
 
+import { launchCampaign, parseLaunchJson, MAX_LAUNCH_BYTES, type LaunchRepository } from "./launch_service.js";
+
 function write(response: ServerResponse, status: number, body: object): void {
   response.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
   response.end(JSON.stringify(body));
@@ -25,7 +27,7 @@ async function read_body(request: IncomingMessage, maxBytes: number, code: strin
 }
 
 export function create_import_server(repository: WebsiteImportRepository, token: string,
-  campaignRepository?: CampaignRepository) {
+  campaignRepository?: CampaignRepository, launchRepository?: LaunchRepository) {
   if (!/^[\x21-\x7e]+$/.test(token)) {
     throw new Error("CONTACT_US_SERVICE_TOKEN must be a non-empty ASCII token without whitespace.");
   }
@@ -38,12 +40,27 @@ export function create_import_server(repository: WebsiteImportRepository, token:
       }
       const isCreate = request.url === "/internal/contact-us/campaigns";
       const match = /^\/internal\/contact-us\/campaigns\/([^/?]+)\/websites\/import$/.exec(request.url ?? "");
-      if (!isCreate && !match) throw new ImportError(404, "NOT_FOUND", "The route does not exist.");
+      const launchMatch = /^\/internal\/contact-us\/campaigns\/([^/?]+)\/runs$/.exec(request.url ?? "");
+      if (!isCreate && !match && !launchMatch) throw new ImportError(404, "NOT_FOUND", "The route does not exist.");
       if (request.method !== "POST") {
         response.setHeader("Allow", "POST");
         throw new ImportError(405, "METHOD_NOT_ALLOWED", "Use POST.");
       }
       const contentType = request.headers["content-type"] ?? "";
+      if (launchMatch) {
+        if (request.headers["content-encoding"] && request.headers["content-encoding"].toLowerCase() !== "identity") {
+          throw new ImportError(415, "UNSUPPORTED_MEDIA_TYPE", "Send uncompressed UTF-8 JSON.");
+        }
+        const campaignId = parse_campaign_id(launchMatch[1]!);
+        if (!/^application\/json(?:\s*;\s*charset\s*=\s*(?:utf-8|"utf-8"))?\s*$/i.test(contentType)) {
+          throw new ImportError(415, "UNSUPPORTED_MEDIA_TYPE", "Use application/json with UTF-8.");
+        }
+        const bytes = await read_body(request, MAX_LAUNCH_BYTES, "REQUEST_TOO_LARGE", "The launch request exceeds 4 KiB.");
+        const input = parseLaunchJson(bytes);
+        if (!launchRepository) throw new ImportError(503, "SERVICE_UNAVAILABLE", "The launch service is unavailable.");
+        write(response, 202, await launchCampaign(campaignId, input, launchRepository));
+        return;
+      }
       if (isCreate) {
         if (!/^application\/json(?:\s*;\s*charset\s*=\s*(?:utf-8|"utf-8"))?\s*$/i.test(contentType)) {
           throw new ImportError(415, "UNSUPPORTED_MEDIA_TYPE", "Use application/json with UTF-8.");

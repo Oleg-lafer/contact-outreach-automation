@@ -21,7 +21,7 @@ per-campaign prevention of repeated successful submissions.
 
 ## Minimal Schema
 
-The schema contains exactly three core tables:
+The schema contains three core tables; campaign rows also store the launch queue:
 
 - `OUTREACH_campaigns` describes what the system intends to send. It contains
   `campaign_id`, `campaign_name`, `sender_details`, `message_to_send`,
@@ -40,6 +40,18 @@ Campaigns own websites directly through `OUTREACH_websites.campaign_id`.
 Attempts derive their campaign through their website. Queries for a campaign's
 attempts must join attempts to websites. Multiple attempts for the same website
 are allowed so retries and history remain visible.
+
+`OUTREACH_campaigns` stores `run_sequence`, `run_state`, `run_requested_time`,
+`current_run`, and `run_history`. Run numbers are local to each campaign. Always
+use campaign ID plus run number for attempts, heartbeats, recovery, and summaries.
+Attempts have nullable `run_number` with no JSON foreign key. Current state and
+JSON state change together. Earlier terminal runs are archived once on launch.
+Migration 007 preserves legacy IDs in JSON, verifies attempt conversion, and
+removes historical `OUTREACH_runs` only after a verified external backup.
+Migration 006 is not in the automatic migration path. Require confirmed paused
+API/worker/scheduled outreach and hold the execution lock during migration.
+Preserve supplied sender JSON and message whitespace; do not re-run content
+migration 003 on campaigns already using JSON/TEXT types.
 
 ## Website Identity
 

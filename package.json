@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "api:serve": "tsx src/api/serve.ts",
+    "api:worker": "tsx src/api/worker.ts",
     "start": "tsx src/contact_outreach_workflow/contact_outreach_orchestrator.ts",
     "production": "tsx src/contact_outreach_workflow/contact_outreach_orchestrator.ts production",
     "deep-debug": "tsx src/contact_outreach_workflow/contact_outreach_orchestrator.ts deep-debug",
@@ -13,6 +14,7 @@
     "analyze": "tsx src/contact_form_analytics/contact_form_run_analyzer.ts",
     "typecheck": "tsc --noEmit",
     "test": "tsx --test tests/**/*.test.ts",
+    "test:tomcat": "tsx --test tests/contact-us-tomcat-smoke.ts",
     "test:deep-debug": "tsx --test tests/deep-debug-observability.test.ts",
     "test:stagehand": "tsx --test tests/stagehand-smoke.ts",
     "db:migrate": "tsx src/database/run_database_migrations.ts",

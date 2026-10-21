@@ -22,6 +22,7 @@ import type {
 } from "../shared_files_orchestrator/outreach_types_(Support).js";
 
 export interface ContactOutreachCoreOptions {
+  signal?: AbortSignal;
   runMode?: AutomationRunMode | undefined;
   outputPath?: string | undefined;
   engine?: AutomationEngine | undefined;
@@ -38,9 +39,19 @@ export async function run_contact_outreach_core(
   contact_request: ContactRequest,
   options: ContactOutreachCoreOptions = {},
 ): Promise<ContactOutreachOutcome> {
+  options.signal?.throwIfAborted();
   const timeout_ms = options.siteTimeoutMs ?? resolve_site_watchdog_timeout();
   const state: CoreWatchdogState = { stage: "browser initialization" };
   let timeout: number | NodeJS.Timeout | undefined;
+  let cancel: (() => void) | undefined;
+  const cancellation = new Promise<never>((_, reject) => {
+    cancel = () => {
+      state.expired = true;
+      void state.session?.close().catch(() => undefined);
+      reject(options.signal?.reason ?? new Error("Outreach execution stopped."));
+    };
+    options.signal?.addEventListener("abort", cancel, { once: true });
+  });
   const operation = run_contact_outreach_core_internal(contact_request, options, state);
   const deadline = new Promise<never>((_resolve, reject) => {
     timeout = setTimeout(() => {
@@ -56,8 +67,13 @@ export async function run_contact_outreach_core(
     }, timeout_ms);
   });
   try {
-    return await Promise.race([operation, deadline]);
+    return await Promise.race([operation, deadline, cancellation]);
   } catch (error) {
+    if (options.signal?.aborted) {
+      await state.session?.close().catch(() => undefined);
+      await operation.catch(() => undefined);
+      options.signal.throwIfAborted();
+    }
     if (!(error instanceof SiteWorkflowTimeoutError)) throw error;
     const settled = await settle_within(operation, 2_000);
     const outcome = site_timeout_outcome(contact_request.websiteUrl, error.message);
@@ -70,6 +86,7 @@ export async function run_contact_outreach_core(
     return outcome;
   } finally {
     if (timeout) clearTimeout(timeout);
+    if (cancel) options.signal?.removeEventListener("abort", cancel);
     void operation.catch(() => undefined);
   }
 }
@@ -110,7 +127,9 @@ async function run_contact_outreach_core_internal(
       }).catch(() => undefined);
       if (deep_debug) watchdog_state.deepDebug = deep_debug;
     }
+    options.signal?.throwIfAborted();
     browser_session = await open_target_website(contact_request, {
+      ...(options.signal ? { signal: options.signal } : {}),
       ...(options.engine ? { engine: options.engine } : {}),
       ...(deep_debug ? { deepDebug: deep_debug } : {}),
       redactionValues: contact_request_redaction_values(contact_request),
