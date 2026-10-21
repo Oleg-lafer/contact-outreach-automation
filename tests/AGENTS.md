@@ -58,6 +58,16 @@ After validation, Codex must report:
 
 ## Test File Dictionary
 
+- `contact-us-tomcat-smoke.ts` - opt-in full WAR/JSP HTTP checks through real
+  Tomcat, the Java adapter and Node API with in-memory repositories. Requires
+  Tomcat and a built LSApi WAR; never connects to MySQL or starts outreach.
+
+- `contact-us-campaign.test.ts` - campaign validation, exact message storage,
+  transaction failures, campaign-loader compatibility and internal creation HTTP contracts.
+
+- `contact-us-import.test.ts` - CSV and URL validation, import counts, transaction
+  rollback and conflict handling, internal HTTP limits and service-token checks.
+
 - `contact-form-poc.test.ts` - broad local-server workflow regression suite,
   including English, Hebrew, and mixed-language end-to-end behavior:
   discovery, route following, multi-step forms, population, validation,
@@ -115,3 +125,9 @@ After validation, Codex must report:
 When adding, renaming, splitting, or substantially changing a test file, update
 its entry here. Keep entries at the file/responsibility level; do not enumerate
 every individual test case.
+
+- `contact-us-launch.test.ts`: Launch validation, queue transactions, migration restart safety, and internal HTTP checks.
+- `contact-us-worker.test.ts`: Execution locks, serial work, restart recovery, bounded candidates, and runner cancellation.
+
+- `contact-us-run-fixtures.ts`: Transactional campaign queue fixtures with independent campaign run sequences.
+- `campaign-run-migration.test.ts`: Fresh and legacy campaign-run storage migration, verified backups, restart safety, and data preservation.

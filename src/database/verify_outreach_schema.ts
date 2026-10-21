@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import assert from "node:assert/strict";
 import { resolve } from "node:path";
 import { loadEnvFile } from "node:process";
@@ -23,9 +24,9 @@ interface ConstraintRow extends RowDataPacket {
   CONSTRAINT_TYPE: string;
 }
 
-loadEnvFile(resolve(".env"));
+if (existsSync(resolve(".env"))) loadEnvFile(resolve(".env"));
 const config = database_config_from_environment(process.env);
-const connection = await mysql.createConnection(config);
+const connection = await mysql.createConnection({ ...config, timezone: "Z" });
 const databaseName = process.env.DB_NAME?.trim();
 assert(databaseName, "DB_NAME must be configured.");
 const expectedColumns: Record<string, string[]> = {
@@ -36,6 +37,7 @@ const expectedColumns: Record<string, string[]> = {
     "message_to_send",
     "prevent_resend",
     "created_time",
+    "run_sequence", "run_state", "run_requested_time", "current_run", "run_history",
   ],
   OUTREACH_websites: [
     "website_id",
@@ -46,6 +48,7 @@ const expectedColumns: Record<string, string[]> = {
   ],
   OUTREACH_attempts: [
     "attempt_id",
+    "run_number",
     "website_id",
     "execution_status",
     "forms_result",
@@ -90,6 +93,10 @@ try {
   );
   assert.equal(campaignColumns.get("sender_details"), "json");
   assert.equal(campaignColumns.get("message_to_send"), "text");
+  assert.equal(campaignColumns.get("run_sequence"), "bigint unsigned");
+  assert.equal(campaignColumns.get("current_run"), "json");
+  assert.equal(campaignColumns.get("run_history"), "json");
+  assert.equal(campaignColumns.get("run_state"), "enum('queued','running','completed','failed')");
   assert.equal(
     attemptColumns.get("execution_status"),
     "enum('queued','running','finished','run_failed','skipped','timed_out')",
@@ -115,6 +122,14 @@ try {
   assert(indexNames.has("uq_outreach_websites_normalized_domain"));
   assert(indexNames.has("idx_outreach_websites_campaign"));
   assert(indexNames.has("idx_outreach_attempt_resend_lookup"));
+  assert(indexNames.has("idx_outreach_campaign_run_queue"));
+  assert(indexNames.has("idx_outreach_attempt_run_number"));
+  for (const [name, expected] of [
+    ["idx_outreach_campaign_run_queue", ["run_state", "run_requested_time", "campaign_id"]],
+    ["idx_outreach_attempt_run_number", ["run_number", "execution_status", "website_id"]],
+  ] as const) {
+    assert.deepEqual(indexes.filter(row => row.INDEX_NAME === name).sort((a, b) => a.SEQ_IN_INDEX - b.SEQ_IN_INDEX).map(row => row.COLUMN_NAME), [...expected]);
+  }
   const resendIndexColumns = indexes
     .filter((row) => row.INDEX_NAME === "idx_outreach_attempt_resend_lookup")
     .sort((left, right) => left.SEQ_IN_INDEX - right.SEQ_IN_INDEX)
@@ -136,8 +151,27 @@ try {
   assert(constraintNames.has("fk_outreach_attempt_website"));
   assert(constraintNames.has("chk_outreach_attempt_completed_time"));
 
+  const [obsolete] = await connection.query<RowDataPacket[]>(
+    "SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'OUTREACH_runs'");
+  assert.equal(obsolete.length, 0, "Historical runs table must be removed after conversion.");
+  assert.equal(attemptColumns.has("run_id"), false);
+  assert.equal(attemptColumns.get("run_number"), "bigint unsigned");
+  const [campaignRows] = await connection.query<RowDataPacket[]>("SELECT run_sequence, run_state, current_run, run_history FROM OUTREACH_campaigns");
+  for (const row of campaignRows) {
+    const history = row.run_history == null ? [] : typeof row.run_history === "string" ? JSON.parse(row.run_history) : row.run_history;
+    const current = row.current_run == null ? null : typeof row.current_run === "string" ? JSON.parse(row.current_run) : row.current_run;
+    assert(Array.isArray(history));
+    assert.equal(history.length + (current ? 1 : 0), Number(row.run_sequence));
+    assert.equal(current?.state ?? null, row.run_state);
+    [...history, ...(current ? [current] : [])].forEach((run, index) => assert.equal(run.runNumber, index + 1));
+  }
+  const [badLinks] = await connection.query<RowDataPacket[]>(
+    `SELECT COUNT(*) AS count FROM OUTREACH_attempts a JOIN OUTREACH_websites w ON w.website_id = a.website_id
+     JOIN OUTREACH_campaigns c ON c.campaign_id = w.campaign_id
+     WHERE a.run_number IS NOT NULL AND (a.run_number < 1 OR a.run_number > c.run_sequence)`);
+  assert.equal(Number(badLinks[0]?.count), 0, "Every attempt run number must belong to its campaign history.");
   console.log(
-    "Verified 3 outreach tables, 22 columns, channel-result enums, required indexes, foreign keys, and lifecycle constraint.",
+    "Verified campaign run JSON, website, and attempt schema, indexes, foreign keys, and lifecycle constraint.",
   );
 } finally {
   await connection.end();

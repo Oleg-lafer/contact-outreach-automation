@@ -218,8 +218,8 @@ test("database campaign rows become validated contact values", () => {
     prevent_resend: 1,
   });
   assert.equal(campaign.campaignName, "Alumni");
-  assert.equal(campaign.senderDetails.email, "sender@example.test");
-  assert.equal(campaign.messageToSend, "Message");
+  assert.equal(campaign.senderDetails.email, " sender@example.test ");
+  assert.equal(campaign.messageToSend, " Message ");
   assert.equal(campaign.preventResend, true);
 });
 

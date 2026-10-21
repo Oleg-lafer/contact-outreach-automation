@@ -18,6 +18,7 @@ import {
   create_database_campaign_repository,
   type DatabaseCampaignRepository,
   type DatabaseCandidateMode,
+  type DatabaseRunContext,
 } from "./shared_files_orchestrator/database_campaign_repository_(Integration).js";
 import {
   resolve_site_watchdog_timeout,
@@ -33,7 +34,12 @@ import {
   write_browser_stage_run_summary_files,
 } from "./shared_files_orchestrator/browser_stage_diagnostics_(Support).js";
 
+import { acquire_execution_lock } from "./shared_files_orchestrator/execution_lock_(Integration).js";
+
 export interface DatabaseRunnerOptions {
+  runNumber?: number;
+  websiteIdUpperBound?: number;
+  signal?: AbortSignal;
   campaignId: number;
   runMode: AutomationRunMode;
   retryUnsuccessful: boolean;
@@ -69,18 +75,26 @@ export async function run_database_campaign(
   dependencies: DatabaseRunnerDependencies,
 ): Promise<DatabaseRunSummary> {
   const { repository } = dependencies;
+  const check = () => options.signal?.throwIfAborted();
+  check();
+  const context: DatabaseRunContext | undefined = options.runNumber === undefined ? undefined : {
+    runNumber: options.runNumber, websiteIdUpperBound: options.websiteIdUpperBound!,
+  };
+  if (context && (!Number.isSafeInteger(context.websiteIdUpperBound) || context.websiteIdUpperBound <= 0)) {
+    throw new Error("API run requires a website upper bound.");
+  }
   const campaign = await repository.loadCampaign(options.campaignId);
-  const mode: DatabaseCandidateMode = options.retryUnsuccessful
+  const mode: DatabaseCandidateMode = context ? "api-run" : options.retryUnsuccessful
     ? "retry-unsuccessful"
     : "unattempted";
   const now = dependencies.now();
-  const staleAttemptsRecovered = options.preview
+  const staleAttemptsRecovered = options.preview || !options.confirmed || context !== undefined
     ? 0
     : await repository.recoverStaleAttempts(
         options.campaignId,
         new Date(now.getTime() - resolve_site_watchdog_timeout() - 60_000),
       );
-  const candidates = await repository.snapshotCandidates(options.campaignId, mode);
+  const candidates = await repository.snapshotCandidates(options.campaignId, mode, context);
   const base: DatabaseRunSummary = {
     campaignId: options.campaignId,
     eligible: candidates.length,
@@ -100,11 +114,12 @@ export async function run_database_campaign(
   if (!options.confirmed) return base;
   const engine = dependencies.engine ?? resolve_automation_engine(undefined);
 
-  const runId = format_run_id(now);
+  check();
+  const runDirectoryName = context ? `run-${context.runNumber}-${format_run_id(now)}` : format_run_id(now);
   const runDirectory = resolve(
     options.outputRoot,
     `campaign-${options.campaignId}`,
-    runId,
+    runDirectoryName,
   );
   await mkdir(runDirectory, { recursive: true });
   const summary: DatabaseRunSummary = {
@@ -117,7 +132,9 @@ export async function run_database_campaign(
 
   try {
     for (const [candidate_index, candidate] of candidates.entries()) {
-      const claim = await repository.claimWebsite(campaign, candidate.websiteId, mode);
+      check();
+      const claim = await repository.claimWebsite(campaign, candidate.websiteId, mode, context);
+      check();
       if (claim.action === "unavailable") {
         summary.unavailable++;
         pre_browser_exclusions.push({
@@ -137,6 +154,7 @@ export async function run_database_campaign(
         try {
           const request = contact_request_from_database(campaign, claim.website);
           outcome = await dependencies.runCore(request, {
+            ...(options.signal ? { signal: options.signal } : {}),
             runMode: options.runMode,
             outputPath: reportPath,
             engine,
@@ -148,12 +166,14 @@ export async function run_database_campaign(
             },
           });
         } catch (error) {
+          check();
           outcome = database_input_failure_outcome(
             claim.website.websiteUrl,
             error instanceof Error ? error.message : String(error),
           );
         }
         browser_outcomes.push(outcome);
+        check();
         await repository.completeAttempt(claim.attemptId, outcome);
         summary.processed++;
         if (outcome.executionStatus === "TIMED_OUT") summary.timedOut++;
@@ -185,6 +205,7 @@ export async function run_database_campaign(
     });
   }
 
+  check();
   await writeFile(
     resolve(runDirectory, "summary.json"),
     `${JSON.stringify(summary, null, 2)}\n`,
@@ -256,8 +277,11 @@ async function main(): Promise<void> {
   if (existsSync(environmentPath)) loadEnvFile(environmentPath);
   const options = resolve_database_runner_options(process.argv.slice(2));
   process.env[RUN_MODE_ENVIRONMENT_VARIABLE] = options.runMode;
+  const lock = options.preview || !options.confirmed ? undefined : await acquire_execution_lock(process.env, undefined, true);
+  if (!options.preview && options.confirmed && !lock) throw new Error("Another outreach run is active.");
   const repository = create_database_campaign_repository();
   try {
+    if (lock) options.signal = lock.signal;
     const summary = await run_database_campaign(options, {
       repository,
       runCore: run_contact_outreach_core,
@@ -266,7 +290,7 @@ async function main(): Promise<void> {
     console.log(JSON.stringify(summary, null, 2));
     process.exitCode = summary.failed > 0 || summary.partial > 0 ? 1 : 0;
   } finally {
-    await repository.close();
+    try { await repository.close(); } finally { await lock?.release(); }
   }
 }
 

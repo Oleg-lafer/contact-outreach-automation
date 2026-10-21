@@ -115,7 +115,7 @@ OUTREACH_CAMPAIGN_ID=
 Prepare and verify the schema:
 
 ```powershell
-npm run db:migrate
+npm run db:migrate -- --maintenance-confirmed
 npm run db:verify
 ```
 
@@ -186,3 +186,13 @@ tests/                          Local fixture and unit tests
 ```
 
 The system deliberately excludes CAPTCHA solving, shadow-DOM-specific automation, anti-bot bypasses, autonomous agents, email sending, and meeting booking.
+
+## ContactUs upload API
+
+The optional ContactUs service creates campaigns and imports website CSVs. It is documented in
+[src/api/README.md](src/api/README.md). Start it with `npm run api:serve`.
+Importing websites does not start an outreach run.
+
+## ContactUs campaign launch
+
+The HTTP service accepts campaign launch requests. A separate `npm run api:worker` process executes the durable queue. See `src/api/README.md` for the launch contract and `operations/README.md` for Windows service setup.

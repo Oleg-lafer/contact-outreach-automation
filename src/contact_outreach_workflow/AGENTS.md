@@ -111,7 +111,8 @@ intentional exception.
   temporary pages; forms retain the initial page.
 - Do not bypass CAPTCHA or introduce autonomous Stagehand agents/CUA.
 - Keep contact values redacted from AI snapshots, errors, and artifacts.
-- Preserve the single-submit guarantee and never retry an uncertain submit.
+- Preserve the single-submit guarantee within each attempt. Never retry an uncertain submit within that attempt.
+- The API worker has an explicit user-approved exception after process interruption: retry unfinished attempts of that same run as new attempts. This may repeat a submission. Do not extend this exception to saved terminal outcomes.
 - Preserve `CONTACT_FORM_*` configuration names for operational compatibility.
 - Back generic fixes with local fixtures.
 

@@ -1,6 +1,9 @@
 import type { ContactOutreachOutcome } from "./outreach_types_(Support).js";
 
 export interface OutreachSenderDetails {
+  firstName?: string;
+  lastName?: string;
+  industry?: string;
   name: string;
   email: string;
   phone: string;

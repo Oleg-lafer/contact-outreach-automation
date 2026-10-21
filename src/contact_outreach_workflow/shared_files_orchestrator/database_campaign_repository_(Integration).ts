@@ -13,7 +13,8 @@ import type {
 import type { OutreachSenderDetails } from "./outreach_history_types_(Support).js";
 import { replace_unpaired_surrogates, stringify_mysql_safe_json } from "./unicode_text_(Support).js";
 
-export type DatabaseCandidateMode = "unattempted" | "retry-unsuccessful";
+export type DatabaseCandidateMode = "unattempted" | "retry-unsuccessful" | "api-run";
+export interface DatabaseRunContext { runNumber: number; websiteIdUpperBound: number }
 
 export interface DatabaseCampaign {
   campaignId: number;
@@ -50,6 +51,8 @@ interface AttemptStateRow extends RowDataPacket {
   attempt_id: number;
   execution_status: string;
   forms_result: string | null;
+  run_number?: number | string;
+  outcome_reason?: string;
 }
 
 export interface DatabaseCampaignRepository {
@@ -57,11 +60,13 @@ export interface DatabaseCampaignRepository {
   snapshotCandidates(
     campaignId: number,
     mode: DatabaseCandidateMode,
+    context?: DatabaseRunContext,
   ): Promise<DatabaseWebsiteCandidate[]>;
   claimWebsite(
     campaign: DatabaseCampaign,
     websiteId: number,
     mode: DatabaseCandidateMode,
+    context?: DatabaseRunContext,
   ): Promise<DatabaseWebsiteClaim>;
   completeAttempt(attemptId: number, outcome: ContactOutreachOutcome): Promise<void>;
   recoverStaleAttempts(campaignId: number, staleBefore: Date): Promise<number>;
@@ -99,7 +104,21 @@ implements DatabaseCampaignRepository {
   public async snapshotCandidates(
     campaignId: number,
     mode: DatabaseCandidateMode,
+    context?: DatabaseRunContext,
   ): Promise<DatabaseWebsiteCandidate[]> {
+    if (mode === "api-run") {
+      if (!context) throw new Error("API run context is required.");
+      const [rows] = await this.pool.execute<CandidateRow[]>(
+        `SELECT website.website_id, website.original_input_url FROM OUTREACH_websites website
+         WHERE website.campaign_id = ? AND website.website_id <= ?
+           AND (NOT EXISTS (SELECT 1 FROM OUTREACH_attempts a WHERE a.website_id = website.website_id)
+             OR EXISTS (SELECT 1 FROM OUTREACH_attempts a WHERE a.website_id = website.website_id
+               AND a.attempt_id = (SELECT MAX(last.attempt_id) FROM OUTREACH_attempts last WHERE last.website_id = website.website_id)
+               AND a.run_number = ? AND a.execution_status = 'run_failed' AND a.outcome_reason = 'WORKER_INTERRUPTED'))
+           AND NOT EXISTS (SELECT 1 FROM OUTREACH_attempts a WHERE a.website_id = website.website_id AND a.forms_result = 'success')
+         ORDER BY website.website_id`, [campaignId, context.websiteIdUpperBound, context.runNumber]);
+      return rows.map(candidate_from_row);
+    }
     const eligibility = mode === "unattempted"
       ? `NOT EXISTS (
            SELECT 1 FROM \`OUTREACH_attempts\` AS attempt
@@ -139,6 +158,7 @@ implements DatabaseCampaignRepository {
     campaign: DatabaseCampaign,
     websiteId: number,
     mode: DatabaseCandidateMode,
+    context?: DatabaseRunContext,
   ): Promise<DatabaseWebsiteClaim> {
     const connection = await this.pool.getConnection();
     try {
@@ -152,13 +172,17 @@ implements DatabaseCampaignRepository {
         await connection.rollback();
         return { action: "unavailable", websiteId, reason: "Website is no longer in the campaign." };
       }
-      const attempts = await select_attempt_states(connection, websiteId);
+      if (mode === "api-run" && (!context || websiteId > context.websiteIdUpperBound)) {
+        await connection.rollback();
+        return { action: "unavailable", websiteId, reason: "Website is outside this run." };
+      }
+      const attempts = await select_attempt_states(connection, websiteId, context !== undefined);
       const previous_success = attempts.some(
         (attempt) => attempt.forms_result === "success",
       );
       if (campaign.preventResend && previous_success) {
         const reason = `Skipped because campaign ${campaign.campaignId} already has a successful attempt for website ${websiteId}.`;
-        const attemptId = await insert_attempt(connection, websiteId, "skipped", reason);
+        const attemptId = await insert_attempt(connection, websiteId, "skipped", reason, context?.runNumber);
         await connection.commit();
         return { action: "skip", attemptId, website, reason };
       }
@@ -170,11 +194,11 @@ implements DatabaseCampaignRepository {
           reason: "Successful websites are excluded from database retry runs.",
         };
       }
-      if (!claim_is_still_eligible(attempts, mode)) {
+      if (!claim_is_still_eligible(attempts, mode, context?.runNumber)) {
         await connection.rollback();
         return { action: "unavailable", websiteId, reason: "Website eligibility changed after the campaign snapshot." };
       }
-      const attemptId = await insert_attempt(connection, websiteId, "running");
+      const attemptId = await insert_attempt(connection, websiteId, "running", undefined, context?.runNumber);
       await connection.commit();
       return { action: "run", attemptId, website };
     } catch (error) {
@@ -247,19 +271,22 @@ export function campaign_from_database_row(row: {
     : row.sender_details;
   if (!is_record(raw)) throw new Error("Campaign sender_details must be a JSON object.");
   const senderDetails = {
-    name: required_string(raw.name, "sender_details.name"),
-    email: required_string(raw.email, "sender_details.email"),
-    phone: required_string(raw.phone, "sender_details.phone"),
-    company: required_string(raw.company, "sender_details.company"),
-    role: required_string(raw.role, "sender_details.role"),
-    website: required_string(raw.website, "sender_details.website"),
-    country: required_string(raw.country, "sender_details.country"),
+    name: required_preserved_string(raw.name, "sender_details.name"),
+    email: required_preserved_string(raw.email, "sender_details.email"),
+    phone: required_preserved_string(raw.phone, "sender_details.phone"),
+    company: required_preserved_string(raw.company, "sender_details.company"),
+    role: optional_sender_string(raw.role, "role"),
+    website: optional_sender_string(raw.website, "website"),
+    country: optional_sender_string(raw.country, "country"),
+    ...(raw.firstName === undefined ? {} : { firstName: optional_sender_string(raw.firstName, "firstName") }),
+    ...(raw.lastName === undefined ? {} : { lastName: optional_sender_string(raw.lastName, "lastName") }),
+    ...(raw.industry === undefined ? {} : { industry: optional_sender_string(raw.industry, "industry") }),
   };
   return {
     campaignId: positive_integer(row.campaign_id, "campaign_id"),
     campaignName: required_string(row.campaign_name, "campaign_name"),
     senderDetails,
-    messageToSend: required_string(row.message_to_send, "message_to_send"),
+    messageToSend: required_preserved_string(row.message_to_send, "message_to_send"),
     preventResend: Boolean(row.prevent_resend),
   };
 }
@@ -272,20 +299,31 @@ export function contact_request_from_database(
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
     throw new Error(`Website ${website.websiteId} must use HTTP or HTTPS.`);
   }
+  const sender = campaign.senderDetails;
   return {
     websiteUrl: parsed.toString(),
-    ...campaign.senderDetails,
+    name: sender.name,
+    email: sender.email,
+    phone: sender.phone,
+    company: sender.company,
+    ...(sender.role.trim() ? { role: sender.role } : {}),
+    ...(sender.website.trim() ? { website: sender.website } : {}),
+    ...(sender.country.trim() ? { country: sender.country } : {}),
     message: campaign.messageToSend,
   };
 }
 
 export function claim_is_still_eligible(
-  attempts: ReadonlyArray<{ execution_status: string; forms_result: string | null }>,
+  attempts: ReadonlyArray<{ execution_status: string; forms_result: string | null; run_number?: number | string; outcome_reason?: string }>,
   mode: DatabaseCandidateMode,
+  runNumber?: number,
 ): boolean {
   if (attempts.some((attempt) => attempt.execution_status === "running")) return false;
   if (mode === "unattempted") return attempts.length === 0;
   const latest = attempts[0];
+  if (mode === "api-run") return attempts.length === 0 ||
+    (runNumber !== undefined && String(latest?.run_number) === String(runNumber) &&
+      latest?.execution_status === "run_failed" && latest.outcome_reason === "WORKER_INTERRUPTED");
   return latest?.execution_status === "run_failed" ||
     (latest?.execution_status === "finished" &&
       ["failed", "partial", "inconclusive"].includes(latest.forms_result ?? ""));
@@ -309,9 +347,10 @@ async function select_website_for_update(
 async function select_attempt_states(
   connection: PoolConnection,
   websiteId: number,
+  includeRun = false,
 ): Promise<AttemptStateRow[]> {
   const [rows] = await connection.execute<AttemptStateRow[]>(
-    `SELECT attempt_id, execution_status, forms_result
+    `SELECT attempt_id, execution_status, forms_result${includeRun ? ", run_number, outcome_reason" : ""}
      FROM \`OUTREACH_attempts\`
      WHERE website_id = ?
      ORDER BY attempt_id DESC
@@ -326,7 +365,16 @@ async function insert_attempt(
   websiteId: number,
   status: "running" | "skipped",
   reason?: string,
+  runNumber?: number,
 ): Promise<number> {
+  if (runNumber !== undefined) {
+    const [insert] = await connection.execute<ResultSetHeader>(
+      status === "running"
+        ? "INSERT INTO OUTREACH_attempts (website_id, run_number, execution_status, started_time) VALUES (?, ?, 'running', CURRENT_TIMESTAMP(3))"
+        : "INSERT INTO OUTREACH_attempts (website_id, run_number, execution_status, outcome_reason, completed_time) VALUES (?, ?, 'skipped', ?, CURRENT_TIMESTAMP(3))",
+      status === "running" ? [websiteId, runNumber] : [websiteId, runNumber, reason ?? null]);
+    return positive_integer(insert.insertId, "attempt_id");
+  }
   const [result] = await connection.execute<ResultSetHeader>(
     status === "running"
       ? `INSERT INTO \`OUTREACH_attempts\`
@@ -345,10 +393,20 @@ function candidate_from_row(row: CandidateRow): DatabaseWebsiteCandidate {
 }
 
 function required_string(value: unknown, name: string): string {
+  return required_preserved_string(value, name).trim();
+}
+
+function required_preserved_string(value: unknown, name: string): string {
   if (typeof value !== "string" || value.trim() === "") {
     throw new Error(`${name} must be a non-empty string.`);
   }
-  return value.trim();
+  return value;
+}
+
+function optional_sender_string(value: unknown, name: string): string {
+  if (value === undefined) return "";
+  if (typeof value !== "string") throw new Error(`sender_details.${name} must be a string.`);
+  return value;
 }
 
 function positive_integer(value: unknown, name: string): number {

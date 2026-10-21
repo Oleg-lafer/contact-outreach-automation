@@ -81,6 +81,7 @@ export async function open_target_website(
   contact_request: { websiteUrl: string } & Partial<ContactFillValues>,
   options: BrowserSessionOptions = {},
 ): Promise<OutreachBrowserSession> {
+  options.signal?.throwIfAborted();
   const engine = resolve_automation_engine(options.engine, options.environment);
   const recovery_enabled = resolve_browser_recovery_enabled(options.environment);
   const debug_enabled = is_contact_form_debug_enabled();
@@ -92,6 +93,8 @@ export async function open_target_website(
   capture_resource_snapshot(state, "LAUNCH");
   let phase: BrowserFailurePhase = "LOOPBACK_PORT_RESERVATION";
   let browser: Browser | undefined;
+  const cancel = () => { void browser?.close().catch(() => undefined); };
+  options.signal?.addEventListener("abort", cancel, { once: true });
   let context: BrowserContext | undefined;
   let page: Page | undefined;
   let network_debug_recorder: NetworkDebugRecorder | undefined;
@@ -136,6 +139,7 @@ export async function open_target_website(
           }
         : {}),
     });
+    if (options.signal?.aborted) { await browser.close().catch(() => undefined); options.signal.throwIfAborted(); }
     browser.on("disconnected", () => {
       state.browserDisconnectedObserved = true;
       push_browser_event(state, "browser-disconnected", { initiator: state.browserCloseInitiator ?? "UNKNOWN" });
@@ -153,6 +157,7 @@ export async function open_target_website(
     const navigation_budget_started_at = performance.now();
     const candidates: NavigationCandidate[] = [{ kind: "ORIGINAL", url: contact_request.websiteUrl }];
     for (let index = 0; index < candidates.length && index < 3; index += 1) {
+      options.signal?.throwIfAborted();
       if (index > 0 && performance.now() - navigation_budget_started_at >= BROWSER_RECOVERY_TOTAL_BUDGET_MS) break;
       selected_candidate = candidates[index]!;
       if (page) {
@@ -278,6 +283,7 @@ export async function open_target_website(
       page: active_page,
       context: active_context,
       createChannelPage: async () => {
+        options.signal?.throwIfAborted();
         const channel_page = await active_context.newPage();
         configure_page_timeouts(channel_page);
         dialog_controller.attach(channel_page);
@@ -290,6 +296,7 @@ export async function open_target_website(
       redactionValues: contact_request_redaction_values(contact_request),
       obstructionActions: [],
       close: async () => {
+        options.signal?.removeEventListener("abort", cancel);
         state.browserCloseInitiator = "OUR_AUTOMATION";
         state.contextCloseInitiator = "OUR_AUTOMATION";
         state.pageCloseInitiator = "OUR_AUTOMATION";
@@ -313,8 +320,14 @@ export async function open_target_website(
       });
       session.ensurePageIntelligence = stagehand_attachment.ensure;
     }
+    options.signal?.throwIfAborted();
     return session;
   } catch (error) {
+    options.signal?.removeEventListener("abort", cancel);
+    if (options.signal?.aborted) {
+      await browser?.close().catch(() => undefined);
+      options.signal.throwIfAborted();
+    }
     if (error instanceof BrowserStageError) {
       state.browserCloseInitiator = "OUR_AUTOMATION";
       state.contextCloseInitiator = "OUR_AUTOMATION";
@@ -1346,6 +1359,7 @@ export function resolve_automation_engine(
 }
 
 export interface BrowserSessionOptions {
+  signal?: AbortSignal;
   engine?: AutomationEngine;
   environment?: NodeJS.ProcessEnv;
   allowNavigationFailure?: boolean;
